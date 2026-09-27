@@ -1,0 +1,15 @@
+{
+  "session_id": "49763b61-4ba8-49ca-a3d5-744dc61d4f98",
+  "transcript_path": "/home/user/.claude/projects/-home-user-project/49763b61-4ba8-49ca-a3d5-744dc61d4f98.jsonl",
+  "cwd": "/home/user/project",
+  "prompt_id": "6eafaaac-f1ca-458d-983a-41d05e84f227",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": true,
+  "last_assistant_message": "Команда `exit 3` выполнена и завершилась с кодом выхода 3, как и было задумано. Больше ничего не запускалось.\n\nготово\n\nPONG",
+  "background_tasks": [],
+  "session_crons": []
+}

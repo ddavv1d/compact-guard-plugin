@@ -1,0 +1,7 @@
+# Рабочие файлы оркестратора (не для публикации)
+.harness/
+# Логи живого spike
+tools/spike/log.jsonl
+tools/spike/session-id.txt
+# Node
+node_modules/

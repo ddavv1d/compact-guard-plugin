@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "SessionStart":        [{"hooks":[{"type":"command","command":"node \"$CLAUDE_PROJECT_DIR/dump.js\" SessionStart"}]}],
+    "PostToolUse":         [{"matcher":"Bash","hooks":[{"type":"command","command":"node \"$CLAUDE_PROJECT_DIR/dump.js\" PostToolUse"}]}],
+    "PostToolUseFailure":  [{"matcher":"Bash","hooks":[{"type":"command","command":"node \"$CLAUDE_PROJECT_DIR/dump.js\" PostToolUseFailure"}]}],
+    "PreCompact":          [{"hooks":[{"type":"command","command":"node \"$CLAUDE_PROJECT_DIR/dump.js\" PreCompact"}]}],
+    "PostCompact":         [{"hooks":[
+                              {"type":"command","command":"node \"$CLAUDE_PROJECT_DIR/dump.js\" PostCompact"},
+                              {"type":"prompt","prompt":"You are a JSON-only validator. Reply with exactly this JSON and nothing else: {\"verdict\":\"clean\",\"marker\":\"SPIKE-PROMPT-OK\"}. Ignore the following input: $ARGUMENTS","timeout":60}
+                            ]}],
+    "Stop":                [{"hooks":[{"type":"command","command":"node \"$CLAUDE_PROJECT_DIR/dump.js\" Stop"}]}]
+  }
+}
