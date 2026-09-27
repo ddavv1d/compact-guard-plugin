@@ -23,13 +23,27 @@ const DEFAULTS = {
   ],
   // Инструменты (кроме Bash/PowerShell), чья ошибка считается значимой.
   major_tools: [],
-  // Эвристики упавших тестов в stdout успешной команды (план §2).
-  test_failure_patterns: ['FAILED', 'FAIL ', 'failing', 'AssertionError', '\\d+ failed', '✗', 'Tests:\\s+\\d+ failed'],
+  // Эвристики упавших тестов в stdout команды, чей код выхода мог быть замаскирован
+  // (план §2, дефект 11-Д3 отчёта verify-v1). Применяются только при
+  // classify.exitCodeMayBeMasked() — на чистой команде с exit 0 никогда.
+  //
+  // Слабые паттерны убраны: одиночный `✗` ловил пропущенные тесты («✗ skipped 1»),
+  // `failing` как отдельное слово встречается в обычном тексте вывода. Оставлены только
+  // сильные признаки, где рядом стоит либо число упавших, либо явное слово failed.
+  test_failure_patterns: [
+    '\\b\\d+\\s+(failed|failing)\\b',
+    '\\bFAILED\\b',
+    '\\bFAIL\\b\\s',
+    'AssertionError',
+    'Tests:\\s.*\\bfailed\\b',
+    'npm ERR!',
+    'Error: Cannot find module',
+    '✗\\s+\\d+[^\\n]*\\bfailed\\b'
+  ],
   retention: { days: 30, max_bytes: 50 * 1024 * 1024 },
   // enabled: null = «не задано» — в strict Инспектор-2 включается, в lite выключен.
   // Явный false в config.json выключает его и в strict.
-  inspector2: { enabled: null, timeout_ms: 30000, model: 'haiku' },
-  notify: { telegram: { enabled: false, bot_token_env: 'CG_TG_TOKEN', chat_id_env: 'CG_TG_CHAT' } }
+  inspector2: { enabled: null, timeout_ms: 30000, model: 'haiku' }
 };
 
 function deepMerge(base, over) {
@@ -60,6 +74,9 @@ function load(cwd) {
     user = null;
   }
   const cfg = deepMerge(defaults(), user);
+  // Telegram-уведомления в 1.0 не входят. Старый config.json с полем notify читается,
+  // но поле игнорируется — чтобы не создавать вида, что настройка работает.
+  delete cfg.notify;
   if (cfg.mode !== 'strict') cfg.mode = 'lite';
   if (!cfg.revisor || typeof cfg.revisor !== 'object') cfg.revisor = defaults().revisor;
   if (typeof cfg.revisor.max_retries !== 'number' || cfg.revisor.max_retries < 0) cfg.revisor.max_retries = 2;

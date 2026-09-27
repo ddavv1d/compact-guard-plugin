@@ -306,16 +306,31 @@ function onPostToolUse(cwd, input, cfg) {
 
   // 1) Провал в выводе команды, которую Claude Code счёл успешной.
   //    Живая проверка 27.09.2026: тот же упавший `npm test` в одной сессии приходит как
-  //    PostToolUseFailure, а в другой — как PostToolUse с is_error=false. Поэтому вывод
-  //    значимой команды проверяется всегда, а не только при замаскированном коде выхода.
+  //    PostToolUseFailure, а в другой — как PostToolUse с is_error=false. Но проверять вывод
+  //    у любой значимой команды нельзя: успешный `npm test` со строкой «✗ skipped 1»
+  //    становился открытой major-ошибкой и блокировал завершение хода (дефект 11-Д3 verify-v1).
+  //    Поэтому эвристики применяются только там, где код выхода значимой части мог быть
+  //    замаскирован: конвейер, `||`, `;`, `&&`-хвост из echo/true/tail/head, обёртка `( … ) |`.
+  //
+  //    Признак провала в выводе считается один раз и используется двумя способами,
+  //    с разной строгостью — потому что цена ошибки разная:
+  //      - завести НОВУЮ major-запись (она заблокирует ход) можно только при маскировке;
+  //      - НЕ закрывать уже открытую запись достаточно одного признака провала в выводе:
+  //        оставить ошибку открытой безопаснее, чем закрыть непочиненное.
+  const outputLooksBad = significance === 'major' ? classify.looksLikeFailure(stdout, cfg) : null;
   let failureHit = null;
-  if (significance === 'major') {
-    failureHit = classify.looksLikeFailure(stdout, cfg);
+  if (outputLooksBad && classify.exitCodeMayBeMasked(command)) {
+    failureHit = outputLooksBad;
   }
 
   // 2) Закрытие открытой записи с той же сигнатурой — только если вывод чистый.
   //    Иначе повторный прогон с теми же ошибками закрыл бы запись без починки.
   if (!failureHit) {
+    if (outputLooksBad) {
+      // Вывод плохой, но код выхода замаскирован не был: новую запись не заводим
+      // (это могла быть успешная команда с шумом в выводе), но и открытую не закрываем.
+      return 'noop:output_suspicious';
+    }
     const resolved = ledger.resolveBySignature(cwd, input.session_id, sig, tool);
     if (resolved.length) notes.push('resolved:' + resolved.join(','));
     return notes.length ? notes.join(' ') : 'noop';

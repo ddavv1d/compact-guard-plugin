@@ -176,15 +176,16 @@ test('PostToolUse: упавшие тесты при замаскированно
   assert.equal(rows[0].significance, 'major');
 });
 
-test('PostToolUse: упавший npm test, отданный как успех, всё равно попадает в ledger', () => {
-  // Живая проверка 27.09.2026: тот же упавший `npm test` в одной сессии пришёл
-  // PostToolUseFailure, а в другой — PostToolUse с is_error=false.
+test('PostToolUse: упавший npm test под обёрткой, отданный как успех, попадает в ledger', () => {
+  // Живая проверка 27.09.2026: сторонний хук пользователя оборачивает команду
+  // (`( npm test ) 2>&1 | tail -c 24000`), код выхода берётся от `tail`, и упавший тест
+  // приходит обычным PostToolUse. Именно в этом случае вывод и проверяется.
   const dir = env();
   const input = {
     session_id: SESSION, cwd: CWD, hook_event_name: 'PostToolUse', tool_name: 'Bash',
-    tool_input: { command: 'npm test' },
+    tool_input: { command: '( npm test ) 2>&1 | tail -c 24000' },
     tool_response: {
-      stdout: 'npm error code ENOENT\nnpm error path /home/user/project/package.json\nnpm error enoent Could not read package.json',
+      stdout: 'npm ERR! Test failed.  See above for more details.\nTests: 3 failed, 10 passed',
       stderr: '', interrupted: false
     }
   };
@@ -198,6 +199,33 @@ test('PostToolUse: упавший npm test, отданный как успех, 
   // И Ревизор теперь эту ошибку требует.
   const stop = run('Stop', Object.assign(fixture('Stop-first.json'), { last_assistant_message: 'готово' }), dir);
   assert.ok(stop.json && stop.json.decision === 'block', 'Ревизор должен требовать раскрытия: ' + stop.stdout);
+});
+
+// Дефект 11-Д3 verify-v1: на чистой команде с exit 0 вывод не проверяется вообще.
+test('PostToolUse: успешный npm test с «✗ skipped 1» не создаёт записи', () => {
+  const dir = env();
+  const input = {
+    session_id: SESSION, cwd: CWD, hook_event_name: 'PostToolUse', tool_name: 'Bash',
+    tool_input: { command: 'npm test' },
+    tool_response: { stdout: 'All tests passed\n✗ skipped 1 (optional)', stderr: '', interrupted: false }
+  };
+  const r = run('PostToolUse', input, dir);
+  assert.equal(r.code, 0);
+  assert.deepEqual(readJsonl(dataPaths(dir).ledger), [], 'успешная команда не должна попадать в ledger');
+  // И завершение хода не блокируется.
+  const stop = run('Stop', Object.assign(fixture('Stop-first.json'), { last_assistant_message: 'Готово.' }), dir);
+  assert.equal(stop.stdout.trim(), '', 'Ревизор не должен блокировать: ' + stop.stdout);
+});
+
+test('PostToolUse: успешная сборка со строкой «Error: none» не создаёт записи', () => {
+  const dir = env();
+  const input = {
+    session_id: SESSION, cwd: CWD, hook_event_name: 'PostToolUse', tool_name: 'Bash',
+    tool_input: { command: 'npm run build' },
+    tool_response: { stdout: 'webpack compiled with 0 errors\nError: none', stderr: '', interrupted: false }
+  };
+  run('PostToolUse', input, dir);
+  assert.deepEqual(readJsonl(dataPaths(dir).ledger), [], 'успешная сборка не должна попадать в ledger');
 });
 
 test('PostToolUse: повторный прогон с теми же ошибками не закрывает запись', () => {

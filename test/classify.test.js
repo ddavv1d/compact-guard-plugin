@@ -99,10 +99,28 @@ test('эвристика упавших тестов ловит типовые �
     'FAILED tests/test_auth.py::test_login',
     '2 failed',
     'AssertionError: expected 1 to equal 2',
-    '✗ auth returns 401'
+    'npm ERR! Test failed.  See above for more details.',
+    'Error: Cannot find module \'./missing\'',
+    '✗ 3 tests failed'
   ];
   for (const h of hits) {
     assert.ok(classify.looksLikeTestFailure(h, cfg), 'не поймано: ' + h);
+  }
+});
+
+// Дефект 11-Д3 verify-v1: одиночный «✗» и слово «failing» убраны из дефолтных паттернов —
+// они ловили пропущенные тесты и обычный текст вывода.
+test('эвристика молчит на пропущенных тестах и одиночном ✗', () => {
+  // «1 failing» в списке не значится намеренно: паттерн `\d+\s+failing` оставлен как
+  // сильный признак. Убрано только одиночное слово `failing` без числа.
+  const clean = [
+    'All tests passed ✗ skipped 1',
+    '✗ auth returns 401',
+    'the failing test suite was fixed earlier in this session',
+    'webpack compiled with 0 errors'
+  ];
+  for (const c of clean) {
+    assert.equal(classify.looksLikeTestFailure(c, cfg), null, 'ложное срабатывание: ' + c);
   }
 });
 
@@ -146,4 +164,58 @@ test('чистый вывод не считается провалом', () => {
 test('битый паттерн из конфига не ломает эвристику', () => {
   const bad = config.deepMerge(config.defaults(), { test_failure_patterns: ['(((', 'FAILED'] });
   assert.equal(classify.looksLikeTestFailure('FAILED something', bad), 'FAILED');
+});
+
+// ——— дефект 12 verify-v1: подстрока `test` внутри слова давала ложный major ———
+
+test('значимость считается по токенам, а не по подстроке', () => {
+  // `latest`, `fastest`, `attestation` содержат `test`, но значимыми командами не являются.
+  for (const c of ['latest', 'fastest', 'attestation', 'echo latest', 'echo attestation done']) {
+    assert.equal(classify.commandSignificance(c, cfg), 'minor', 'должно быть minor: ' + c);
+  }
+  // Настоящие значимые команды по-прежнему major.
+  for (const c of ['npm test', 'pytest', 'cargo test', 'go test ./...', 'npm run test:unit',
+    'pytest -k login', 'npm run build', 'eslint .', 'npm ci']) {
+    assert.equal(classify.commandSignificance(c, cfg), 'major', 'должно быть major: ' + c);
+  }
+});
+
+test('matchesToken требует границы слова с двух сторон', () => {
+  assert.ok(classify.matchesToken('npm test', 'test'));
+  assert.ok(classify.matchesToken('npm run test:unit', 'test'));
+  assert.ok(classify.matchesToken('cd x && cargo test', 'cargo test'));
+  assert.ok(!classify.matchesToken('latest', 'test'));
+  assert.ok(!classify.matchesToken('attestation', 'test'));
+  assert.ok(!classify.matchesToken('fastest', 'test'));
+});
+
+// ——— дефект 11-Д3 verify-v1: эвристики только при возможной маскировке кода выхода ———
+
+test('маскировка кода выхода: конвейеры, списки и обёртки', () => {
+  const masked = [
+    '( npm test ) 2>&1 | tail -c 24000',
+    '( npm test ) | head -50',
+    'npm test | tail -c 24000',
+    'npm test || true',
+    'npm test || echo failed',
+    'pytest ; echo finished',
+    'npm test && echo done',
+    'npm run build && tail -5 out.log'
+  ];
+  for (const c of masked) {
+    assert.ok(classify.exitCodeMayBeMasked(c), 'должна быть возможна маскировка: ' + c);
+  }
+});
+
+test('чистая команда — маскировки нет', () => {
+  const clean = [
+    'npm test',
+    'npm test --silent',
+    'pytest -k login',
+    'cd /srv/app && npm test',
+    'npm ci && npm test'
+  ];
+  for (const c of clean) {
+    assert.ok(!classify.exitCodeMayBeMasked(c), 'маскировки быть не должно: ' + c);
+  }
 });

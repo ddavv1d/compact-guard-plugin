@@ -30,6 +30,34 @@ function hasAny(haystackLower, patterns) {
   return false;
 }
 
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Токен паттерна встречается в команде по границам слов, а не подстрокой.
+// Подстрочная проверка давала ложные major на `latest`, `fastest`, `attestation`
+// (все содержат `test`) — дефект 12 отчёта verify-v1. Граница слова здесь — не \b:
+// в `docker build` и `cargo test` внутри паттерна есть пробел, а в `npm ci` — тоже,
+// поэтому паттерн целиком оборачивается в собственные границы.
+// Разделителем считается всё, что не буква, не цифра, не `_` и не `-`: так
+// `npm run test:unit` и `pytest -k x` ловятся, а `attestation` — нет.
+const TOKEN_EDGE = '[^A-Za-z0-9_-]';
+
+function matchesToken(haystackLower, pattern) {
+  const p = pattern.toLowerCase().trim();
+  if (!p) return false;
+  const re = new RegExp('(?:^|' + TOKEN_EDGE + ')' + escapeRe(p) + '(?:$|' + TOKEN_EDGE + ')');
+  return re.test(haystackLower);
+}
+
+function hasAnyToken(haystackLower, patterns) {
+  for (const p of patterns || []) {
+    if (typeof p !== 'string' || !p) continue;
+    if (matchesToken(haystackLower, p)) return true;
+  }
+  return false;
+}
+
 // Значимость команды Bash/PowerShell.
 // Список minor проверяется первым и только по началу команды: `test -f`, `grep`, `ls`
 // содержат подстроки из списка major («test», «ls»), но ненулевой код для них — норма,
@@ -42,7 +70,7 @@ function commandSignificance(command, cfg) {
     if (typeof p !== 'string' || !p) continue;
     if (head.startsWith(p.toLowerCase())) return 'minor';
   }
-  if (hasAny(sig, cfg && cfg.major_patterns)) return 'major';
+  if (hasAnyToken(sig, cfg && cfg.major_patterns)) return 'major';
   return 'minor';
 }
 
@@ -63,6 +91,43 @@ function parseExitCode(errorText) {
 function exitCodeMasked(command) {
   const s = signature(command);
   return /\|\|\s*(true|echo|:)\b/i.test(s) || /;\s*(echo|true|exit\s+0)\b/i.test(s) || /\|\s*tee\b/i.test(s);
+}
+
+// Мог ли код выхода значимой части команды не доехать до Claude Code?
+// Это условие применения эвристик по выводу (дефект 11-Д3 отчёта verify-v1):
+// на чистой команде с exit 0 вывод не проверяется вообще, иначе успешный `npm test`
+// со строкой «✗ skipped 1» становился открытой major-ошибкой и блокировал завершение хода.
+//
+// Маскировка возможна, если после значимой части команды стоит:
+//  - конвейер `|` (код берётся от последней команды конвейера);
+//  - `||` или `;` (код берётся от последней команды списка);
+//  - `&&`-цепочка, завершающаяся `echo`/`true`/`tail`/`head`/`cat`/`tee`;
+//  - обёртка `( … ) 2>&1 | …` — её `signature()` разворачивает, поэтому проверяется
+//    исходная строка команды, а не сигнатура.
+function exitCodeMayBeMasked(command) {
+  const raw = typeof command === 'string' ? command.replace(/[\r\n]+/g, ' ') : '';
+  if (!raw.trim()) return false;
+
+  // Обёртка `( … ) 2>&1 | tail…`: код выхода — от `tail`, не от команды внутри.
+  if (/^\s*\(\s*[\s\S]+\)\s*(?:\d?>&\d|2>&1)?\s*\|/.test(raw)) return true;
+  // `( … ) | …` без перенаправления — тот же случай.
+  if (/^\s*\(\s*[\s\S]+\)\s*\|/.test(raw)) return true;
+
+  // Дальше работаем с сигнатурой: без ведущих `cd … &&` и без внешней обёртки.
+  const s = signature(command);
+  if (!s) return false;
+
+  // Конвейер: `npm test | tail -c 24000`.
+  if (/\|(?!\|)/.test(s)) return true;
+  // Список команд: `npm test || true`, `npm test; echo done`.
+  if (/\|\|/.test(s)) return true;
+  if (/;/.test(s)) return true;
+  // `&&`-цепочка, последнее звено которой не влияет на успех значимой части.
+  if (/&&/.test(s)) {
+    const tail = s.split(/&&/).pop().trim().toLowerCase();
+    if (/^(?:echo|true|:|tail|head|cat|tee)\b/.test(tail)) return true;
+  }
+  return false;
 }
 
 function compileTestPatterns(cfg) {
@@ -118,7 +183,9 @@ module.exports = {
   toolSignificance,
   parseExitCode,
   exitCodeMasked,
+  exitCodeMayBeMasked,
   looksLikeTestFailure,
   looksLikeFailure,
+  matchesToken,
   ERROR_MARKERS
 };
