@@ -5,5 +5,5 @@ tools/spike/log.jsonl
 tools/spike/session-id.txt
 # Node
 node_modules/
-# Worktrees исполнителей
-.claude/worktrees/
+# Локальные файлы Claude Code (worktrees, память агентов, логи)
+.claude/
