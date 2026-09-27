@@ -248,6 +248,28 @@ test('пустое резюме → skipped, без запуска процес�
   assert.deepStrictEqual(r.findings, []);
 });
 
+test('cwd вызова — один и тот же пустой каталог, а не новый на каждый вызов', () => {
+  // Claude Code на каждый новый cwd создаёт каталог в ~/.claude/projects/, поэтому
+  // случайное имя засоряло бы его на каждой компакции (живая проверка 28.09.2026).
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-cwdprobe-'));
+  const file = path.join(dir, 'claude');
+  const outFile = path.join(dir, 'cwds.txt');
+  fs.writeFileSync(file, [
+    '#!/bin/sh',
+    'pwd >> "' + outFile + '"',
+    'cat >/dev/null',
+    'echo \'{"verdict":"clean","findings":[]}\''
+  ].join('\n') + '\n', { mode: 0o755 });
+
+  review(file);
+  review(file);
+  const seen = fs.readFileSync(outFile, 'utf8').split('\n').filter(Boolean);
+  assert.strictEqual(seen.length, 2, 'ожидались два вызова');
+  assert.strictEqual(seen[0], seen[1], 'cwd разный на разных вызовах: ' + JSON.stringify(seen));
+  // Каталог пустой: никакого CLAUDE.md проверяемого проекта модель не увидит.
+  assert.deepStrictEqual(fs.readdirSync(seen[0]), []);
+});
+
 test('модель и таймаут берутся из config, дефолт haiku', () => {
   const bin = fakeClaude(JSON.stringify({ type: 'result', result: '{"verdict":"clean","findings":[]}' }), 0);
   const r1 = review(bin, { cfg: { inspector2: { model: 'sonnet', timeout_ms: 5000 } } });

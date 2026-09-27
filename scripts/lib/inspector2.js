@@ -151,11 +151,18 @@ function cleanEnv() {
 }
 
 // Пустой каталог под запуск: чтобы модель не подхватила CLAUDE.md проверяемого проекта.
+// Имя постоянное, а не mkdtemp: Claude Code на каждый новый cwd создаёт каталог в
+// ~/.claude/projects/, и случайные имена засоряли бы его на каждой компакции
+// (найдено живой проверкой 28.09.2026). Один и тот же путь — один каталог на все вызовы.
+const CWD_NAME = 'compact-guard-inspector2';
+
 function makeEmptyCwd() {
   try {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'cg-i2-'));
+    const dir = path.join(os.tmpdir(), CWD_NAME);
+    fs.mkdirSync(dir, { recursive: true });
+    return { dir, temporary: false };
   } catch (_) {
-    return os.tmpdir();
+    return { dir: os.tmpdir(), temporary: false };
   }
 }
 
@@ -180,7 +187,7 @@ function review(opts) {
 
   const bin = (opts && opts.claudeBin) || process.env.CG_CLAUDE_BIN || 'claude';
   const prompt = buildPrompt(summary, (opts && opts.openRows) || []);
-  const cwd = makeEmptyCwd();
+  const run = makeEmptyCwd();
 
   let res;
   try {
@@ -189,14 +196,17 @@ function review(opts) {
       encoding: 'utf8',
       timeout: timeoutMs,
       killSignal: 'SIGKILL',
-      cwd,
+      cwd: run.dir,
       env: cleanEnv(),
       maxBuffer: 8 * 1024 * 1024
     });
   } catch (e) {
     return out('error', 'spawn_failed: ' + String((e && e.message) || e));
   } finally {
-    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) { /* не важно */ }
+    // Каталог постоянный и пустой — удалять его между вызовами не нужно.
+    if (run.temporary) {
+      try { fs.rmSync(run.dir, { recursive: true, force: true }); } catch (_) { /* не важно */ }
+    }
   }
 
   if (res.error) {
