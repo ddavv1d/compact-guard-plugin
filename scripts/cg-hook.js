@@ -258,7 +258,25 @@ function onPostCompact(cwd, input, cfg) {
   return note;
 }
 
+// Вход разобрался? Без session_id и tool_name писать в ledger нельзя: на битом stdin
+// input = {}, и создавалась фантомная запись {"session_id":null,"tool":"unknown"},
+// которая мусорила журнал и попадала в cmd:report как открытая ошибка проекта
+// (дефект 3.1 отчёта verify-v1).
+function hasToolInput(input) {
+  return !!(input && typeof input === 'object' && input.session_id && input.tool_name);
+}
+
 function onPostToolUseFailure(cwd, input, cfg) {
+  if (!hasToolInput(input)) {
+    events.record(cwd, {
+      event: 'PostToolUseFailure',
+      result: 'invalid_input',
+      has_session_id: !!(input && input.session_id),
+      has_tool_name: !!(input && input.tool_name)
+    });
+    return 'invalid_input';
+  }
+
   // Прерывание пользователем — не ошибка агента (план §2).
   if (input.is_interrupt === true) return 'skipped:interrupt';
 
@@ -297,6 +315,16 @@ function onPostToolUseFailure(cwd, input, cfg) {
 }
 
 function onPostToolUse(cwd, input, cfg) {
+  if (!hasToolInput(input)) {
+    events.record(cwd, {
+      event: 'PostToolUse',
+      result: 'invalid_input',
+      has_session_id: !!(input && input.session_id),
+      has_tool_name: !!(input && input.tool_name)
+    });
+    return 'invalid_input';
+  }
+
   const tool = input.tool_name || '';
   if (tool !== 'Bash' && tool !== 'PowerShell') return 'skipped:other_tool';
   const command = (input.tool_input && input.tool_input.command) || '';

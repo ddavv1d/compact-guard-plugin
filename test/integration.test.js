@@ -375,6 +375,48 @@ test('сценарий 7: битый транскрипт → сессия пр�
   assert.ok(ev.some((e) => e.result === 'summary_not_found'), JSON.stringify(ev));
 });
 
+// ——— дефект 3.3 / 7 verify-v1: SessionStart отдавал пустой stdout при внутреннем сбое ———
+
+test('SessionStart:compact отдаёт правила и открытые ошибки даже когда всё сломано', () => {
+  const dir = env();
+  // Открытая major-ошибка в журнале — её агент обязан получить.
+  const row = registerMajorFailure(dir);
+
+  // Ломаем сразу два места: транскрипт битый и каталог summaries подменён файлом,
+  // из-за чего запись архива и карточки внутри inspector.inspect бросает исключение.
+  const broken = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cg-broken2-')), 'session.jsonl');
+  fs.writeFileSync(broken, 'это не json\nи это тоже\n');
+  const l = dataPaths(dir);
+  fs.mkdirSync(l.root, { recursive: true });
+  fs.writeFileSync(l.summaries, 'файл вместо каталога');
+  fs.writeFileSync(l.cards, 'файл вместо каталога');
+  // И очередь notices тоже нечитаема.
+  fs.mkdirSync(l.notices, { recursive: true });
+
+  const input = Object.assign(fixture('SessionStart-compact.json'), { transcript_path: broken });
+  const r = run('SessionStart', input, dir);
+
+  assert.equal(r.code, 0, 'хук обязан выйти с нулём');
+  assert.ok(r.json, 'ожидался JSON, получено: ' + JSON.stringify(r.stdout));
+  const ctx = r.json.hookSpecificOutput.additionalContext;
+  assert.match(ctx, /Правила Compact Guard/, 'правила Инструктора потерялись: ' + ctx);
+  assert.match(ctx, new RegExp(row.id), 'открытая ошибка потерялась: ' + ctx);
+  assert.match(ctx, /Открытые ошибки/, ctx);
+});
+
+test('SessionStart:compact с работающим транскриптом ничего не теряет', () => {
+  const dir = env();
+  const row = registerMajorFailure(dir);
+  const summary = fs.readFileSync(path.join(SUMMARIES, 'no-errors-section.md'), 'utf8');
+  const input = Object.assign(fixture('SessionStart-compact.json'), {
+    transcript_path: transcriptWith(summary, 'manual')
+  });
+  const r = run('SessionStart', input, dir);
+  const ctx = r.json.hookSpecificOutput.additionalContext;
+  assert.match(ctx, /Правила Compact Guard/);
+  assert.match(ctx, new RegExp(row.id));
+});
+
 test('отсутствующий транскрипт → fail-open, правила отданы', () => {
   const dir = env();
   const input = Object.assign(fixture('SessionStart-compact.json'), { transcript_path: '/nope/nope.jsonl' });
@@ -607,16 +649,146 @@ test('каждое событие пишет строку в events.jsonl с д�
   }
 });
 
-test('латентность: Stop и PostToolUseFailure укладываются в 300 мс', () => {
+// Бюджет хука — это wall-clock дочернего процесса, включая старт Node, а не поле e.ms,
+// которое считает только время внутри обработчика (~60 мс из ~120 мс на реальной машине).
+// Прежний тест назывался «укладываются в 300 мс», а измерял не то (оговорка §12 verify-v1).
+// Пять прогонов, порог по медиане: одиночный выброс из-за нагрузки машины не должен
+// валить сборку, а систематическое замедление — должен.
+test('латентность: Stop и PostToolUseFailure укладываются в 300 мс по wall-clock', () => {
+  const RUNS = 5;
+  const BUDGET_MS = 300;
+
+  function median(values) {
+    const s = values.slice().sort((a, b) => a - b);
+    const mid = Math.floor(s.length / 2);
+    return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  }
+
+  const failureMs = [];
+  const stopMs = [];
+
+  for (let i = 0; i < RUNS; i++) {
+    const dir = env();
+
+    // PostToolUseFailure: замеряем сам вызов дочернего процесса.
+    const failInput = {
+      session_id: SESSION, cwd: CWD, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash',
+      tool_input: { command: 'npm test' }, error: 'Exit code 1\n2 failed'
+    };
+    let t0 = process.hrtime.bigint();
+    const rf = run('PostToolUseFailure', failInput, dir);
+    failureMs.push(Number(process.hrtime.bigint() - t0) / 1e6);
+    assert.equal(rf.code, 0);
+
+    // Stop на непустом журнале — самый дорогой путь Ревизора: он читает ledger и решает.
+    const stopInput = Object.assign(fixture('Stop-first.json'), { last_assistant_message: 'готово' });
+    t0 = process.hrtime.bigint();
+    const rs = run('Stop', stopInput, dir);
+    stopMs.push(Number(process.hrtime.bigint() - t0) / 1e6);
+    assert.equal(rs.code, 0);
+    assert.ok(rs.json && rs.json.decision === 'block', 'ожидался блок: ' + rs.stdout);
+  }
+
+  const mf = median(failureMs);
+  const ms = median(stopMs);
+  assert.ok(mf < BUDGET_MS,
+    'PostToolUseFailure: медиана ' + mf.toFixed(0) + ' мс (бюджет ' + BUDGET_MS + '), прогоны: ' +
+    failureMs.map((x) => x.toFixed(0)).join(', '));
+  assert.ok(ms < BUDGET_MS,
+    'Stop: медиана ' + ms.toFixed(0) + ' мс (бюджет ' + BUDGET_MS + '), прогоны: ' +
+    stopMs.map((x) => x.toFixed(0)).join(', '));
+});
+
+test('внутреннее время обработчика тоже пишется в events', () => {
   const dir = env();
   registerMajorFailure(dir);
   run('Stop', Object.assign(fixture('Stop-first.json'), { last_assistant_message: 'готово' }), dir);
   const ev = readJsonl(dataPaths(dir).events);
-  for (const e of ev) {
-    if (e.event === 'Stop' || e.event === 'PostToolUseFailure') {
-      assert.ok(e.ms < 300, e.event + ' занял ' + e.ms + ' мс (бюджет 300)');
-    }
+  const measured = ev.filter((e) => e.event === 'Stop' || e.event === 'PostToolUseFailure');
+  assert.ok(measured.length, 'нет записей с замером: ' + JSON.stringify(ev));
+  for (const e of measured) {
+    assert.equal(typeof e.ms, 'number', e.event + ': нет поля ms');
+    assert.ok(e.ms < 300, e.event + ' занял ' + e.ms + ' мс внутри обработчика (бюджет 300)');
   }
+});
+
+// ——— дефект 3.1 verify-v1: фантомная запись в ledger на битом stdin ———
+
+// Все jsonl-файлы под каталогом данных: на битом stdin во входе нет cwd, поэтому запись
+// уходит в slug рабочего каталога процесса, а не тестового CWD. Ищем по всему каталогу.
+function allJsonl(dir, base) {
+  const out = [];
+  const walk = (d) => {
+    let entries = [];
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of entries) {
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.name === base) out.push(...readJsonl(full));
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+test('PostToolUseFailure на битом stdin не создаёт записи в ledger', () => {
+  const dir = env();
+  const res = spawnSync(process.execPath, [HOOK, 'PostToolUseFailure'], {
+    input: 'not json at all {{{',
+    encoding: 'utf8',
+    env: Object.assign({}, process.env, { CLAUDE_PLUGIN_DATA: dir }),
+    timeout: 20000
+  });
+  assert.equal(res.status, 0, 'хук обязан выйти с нулём');
+  assert.equal((res.stdout || '').trim(), '', 'ожидался пустой stdout: ' + res.stdout);
+  const rows = allJsonl(dir, 'ledger.jsonl');
+  assert.deepEqual(rows, [], 'фантомная запись в ledger: ' + JSON.stringify(rows));
+  const ev = allJsonl(dir, 'events.jsonl');
+  assert.ok(ev.some((e) => e.result === 'invalid_input'), 'нет отметки invalid_input: ' + JSON.stringify(ev));
+});
+
+test('PostToolUse на битом stdin не создаёт записи в ledger', () => {
+  const dir = env();
+  const res = spawnSync(process.execPath, [HOOK, 'PostToolUse'], {
+    input: 'not json at all {{{',
+    encoding: 'utf8',
+    env: Object.assign({}, process.env, { CLAUDE_PLUGIN_DATA: dir }),
+    timeout: 20000
+  });
+  assert.equal(res.status, 0);
+  assert.equal((res.stdout || '').trim(), '', 'ожидался пустой stdout: ' + res.stdout);
+  const rows = allJsonl(dir, 'ledger.jsonl');
+  assert.deepEqual(rows, [], 'фантомная запись в ledger: ' + JSON.stringify(rows));
+  const ev = allJsonl(dir, 'events.jsonl');
+  assert.ok(ev.some((e) => e.result === 'invalid_input'), JSON.stringify(ev));
+});
+
+test('вход без tool_name не пишется в ledger', () => {
+  const dir = env();
+  const r = run('PostToolUseFailure', { session_id: SESSION, cwd: CWD, error: 'Exit code 1' }, dir);
+  assert.equal(r.code, 0);
+  assert.deepEqual(readJsonl(dataPaths(dir).ledger), []);
+});
+
+test('вход без session_id не пишется в ledger', () => {
+  const dir = env();
+  const r = run('PostToolUseFailure', {
+    cwd: CWD, tool_name: 'Bash', tool_input: { command: 'npm test' }, error: 'Exit code 1'
+  }, dir);
+  assert.equal(r.code, 0);
+  assert.deepEqual(readJsonl(dataPaths(dir).ledger), []);
+});
+
+test('корректный вход по-прежнему пишется', () => {
+  const dir = env();
+  const r = run('PostToolUseFailure', {
+    session_id: SESSION, cwd: CWD, tool_name: 'Bash',
+    tool_input: { command: 'npm test' }, error: 'Exit code 1\n2 failed'
+  }, dir);
+  assert.equal(r.code, 0);
+  const rows = readJsonl(dataPaths(dir).ledger);
+  assert.equal(rows.length, 1, JSON.stringify(rows));
+  assert.equal(rows[0].significance, 'major');
 });
 
 test('данные лежат в CLAUDE_PLUGIN_DATA/projects/<slug>, репозиторий не трогается', () => {
