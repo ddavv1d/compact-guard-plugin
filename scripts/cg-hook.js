@@ -68,60 +68,96 @@ function writeSessionState(cwd, sessionId, state) {
 
 // ——— обработчики ———
 
+// Правила Инструктора и список открытых major-ошибок обязаны доехать до агента даже если
+// всё остальное сломалось: упал Инспектор-1, недоступен транскрипт, битая очередь notices,
+// не прошла ротация ledger. Поэтому каждый этап в своём try/catch, additionalContext
+// накапливается в parts, а единственный emit стоит в finally (дефект 3.3/7 отчёта verify-v1).
 function onSessionStart(cwd, input, cfg) {
   const source = input.source || 'startup';
   const parts = [instructor.rules()];
+  const notes = [];
 
-  if (source === 'startup') {
-    try { config.ensureDefaultFile(cwd); } catch (_) { /* не критично */ }
-    try { ledger.rotate(cwd, cfg, input.session_id); } catch (_) { /* не критично */ }
-  }
-
-  let note = 'instructor';
-
-  if (source === 'compact') {
-    const sessionRows = ledger.forSession(cwd, input.session_id);
-    const openRows = sessionRows.filter((r) => r.kind !== 'compaction' && r.status === 'open');
-    // Ожидание сброса транскрипта на диск; в тестах и doctor сокращается через env.
-    const waitMs = Number(process.env.CG_TRANSCRIPT_WAIT_MS);
-    const found = transcript.lastSummary(input.transcript_path, Number.isFinite(waitMs) ? waitMs : 150);
-
-    if (found && found.text) {
-      const res = inspector.inspect(cwd, {
-        summary: found.text,
-        sessionRows,
-        session_id: input.session_id,
-        trigger: found.trigger || input.trigger || 'unknown',
-        archiveSuffix: 'clean'
-      });
-      const fc = inspector.findingContext(res.findings, res.openMajor);
-      if (fc) parts.push(fc);
-      note = 'inspector1:' + (res.findings.length ? 'findings=' + res.findings.length : 'clean');
-    } else {
-      // Резюме не нашлось — предупреждение в events, вердикт отложен (план §2).
-      events.record(cwd, {
-        event: 'SessionStart',
-        source,
-        session_id: input.session_id,
-        result: 'summary_not_found',
-        transcript_path: input.transcript_path || null
-      });
-      note = 'inspector1:summary_not_found';
+  try {
+    if (source === 'startup') {
+      try { config.ensureDefaultFile(cwd); } catch (_) { /* не критично */ }
+      try { ledger.rotate(cwd, cfg, input.session_id); } catch (_) { notes.push('rotate_error'); }
     }
 
-    // Всегда: открытые ошибки ledger в additionalContext (план §0 строка 13).
-    const openText = instructor.openErrorsText(openRows, ledger.describe);
-    if (openText) parts.push(openText);
+    if (source === 'compact') {
+      // Этап 1: журнал сессии. Нужен и Инспектору-1, и списку открытых ошибок.
+      let sessionRows = [];
+      try {
+        sessionRows = ledger.forSession(cwd, input.session_id) || [];
+      } catch (_) {
+        sessionRows = [];
+        notes.push('ledger_error');
+      }
+
+      // Этап 2: список открытых ошибок — первым, до всего, что может упасть.
+      // Это самая ценная часть вывода: она не зависит ни от резюме, ни от Инспектора.
+      let openText = null;
+      try {
+        const openRows = sessionRows.filter((r) => r && r.kind !== 'compaction' && r.status === 'open');
+        openText = instructor.openErrorsText(openRows, ledger.describe);
+      } catch (_) { notes.push('open_errors_error'); }
+
+      // Этап 3: транскрипт и Инспектор-1. Падение здесь не уносит правила и открытые ошибки.
+      try {
+        const waitMs = Number(process.env.CG_TRANSCRIPT_WAIT_MS);
+        const found = transcript.lastSummary(input.transcript_path, Number.isFinite(waitMs) ? waitMs : 150);
+
+        if (found && found.text) {
+          const res = inspector.inspect(cwd, {
+            summary: found.text,
+            sessionRows,
+            session_id: input.session_id,
+            trigger: found.trigger || input.trigger || 'unknown',
+            archiveSuffix: 'clean'
+          });
+          const fc = inspector.findingContext(res.findings, res.openMajor);
+          if (fc) parts.push(fc);
+          notes.push('inspector1:' + (res.findings.length ? 'findings=' + res.findings.length : 'clean'));
+        } else {
+          // Резюме не нашлось — предупреждение в events, вердикт отложен (план §2).
+          try {
+            events.record(cwd, {
+              event: 'SessionStart',
+              source,
+              session_id: input.session_id,
+              result: 'summary_not_found',
+              transcript_path: input.transcript_path || null
+            });
+          } catch (_) { /* журнал не критичен */ }
+          notes.push('inspector1:summary_not_found');
+        }
+      } catch (e) {
+        notes.push('inspector1_error');
+        try {
+          events.record(cwd, {
+            event: 'SessionStart',
+            source,
+            session_id: input.session_id,
+            result: 'inspector1_error',
+            error: String((e && e.message) || e)
+          });
+        } catch (_) { /* журнал не критичен */ }
+      }
+
+      // Всегда: открытые ошибки ledger в additionalContext (план §0 строка 13).
+      if (openText) parts.push(openText);
+    }
+
+    // Непустая очередь доставляется и здесь — чтобы отложенный вердикт не потерялся.
+    try {
+      const q = notices.drain(cwd, input.session_id);
+      if (q && q.text) parts.push(q.text);
+    } catch (_) { notes.push('notices_error'); }
+  } finally {
+    // Единственный emit: что бы ни упало выше, правила и открытые ошибки уходят агенту.
+    emit(ctxOut('SessionStart', parts.join('\n')));
   }
 
-  // Непустая очередь доставляется и здесь — чтобы отложенный вердикт не потерялся.
-  try {
-    const q = notices.drain(cwd, input.session_id);
-    if (q.text) parts.push(q.text);
-  } catch (_) { /* очередь не критична */ }
-
-  emit(ctxOut('SessionStart', parts.join('\n')));
-  return note;
+  return notes.length ? notes.join(':') : 'instructor';
 }
 
 function onPostCompact(cwd, input, cfg) {

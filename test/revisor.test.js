@@ -62,6 +62,100 @@ test('чужой id не считается раскрытым', () => {
   assert.ok(!revisor.idPresent('', 'e_0007'));
 });
 
+// ——— дефект 4-Д1: пробел между буквой и цифрами раскрытием не считается ———
+
+test('id: ведущие нули не обязательны, форма — без пробела', () => {
+  const positives = [
+    '[e_0001]', 'e_0001', 'e-0001', 'e0001', 'E_0001', 'e_1', 'e_01', 'e1',
+    '**e_0001**', '`e_0001`', '- [e_0001] npm test', '(e_0001)', '«e_0001»',
+    'e_0001: упало', 'e_0001, дальше e_0002', 'исправлено e_0001.', 'см. [E-1] выше'
+  ];
+  for (const s of positives) {
+    assert.ok(revisor.idPresent(s, 'e_0001'), 'позитив не распознан: ' + JSON.stringify(s));
+  }
+});
+
+test('id: «шаг e 1» и прочий случайный текст раскрытием не считаются', () => {
+  // `see e1` в список не входит намеренно: `e1` — законная форма записи id,
+  // и пробел перед буквой — допустимая граница. Ловим только пробел ВНУТРИ id.
+  const negatives = [
+    'шаг e 1', 'step E 1', 'e 0001', 'e  1', 'see_0001', 'see1',
+    'e_00011', 'e_10001', 'xe_0001', 'e_0001x', 'note_0001', '0001'
+  ];
+  for (const s of negatives) {
+    assert.ok(!revisor.idPresent(s, 'e_0001'), 'негатив сработал: ' + JSON.stringify(s));
+  }
+});
+
+test('id: «ошибок нет, см. шаг e 1» не закрывает e_0001 сквозным решением', () => {
+  const msg = 'Готово.\n\n### Ошибки сессии\n- ошибок нет, всё прошло. см. шаг e 1';
+  const v = revisor.decide(
+    { last_assistant_message: msg },
+    [row({ id: 'e_0001' })],
+    { mode: 'lite', revisor: { enabled: true, max_retries: 2 } },
+    0
+  );
+  assert.equal(v.decision, 'block', 'Ревизор пропустил ход без раскрытия');
+  assert.deepEqual(v.missing.map((r) => r.id), ['e_0001']);
+});
+
+// ——— дефект 4-Д2: заголовок с хвостом и без решёток ———
+
+test('заголовок распознаётся со счётчиком, двоеточием и без решёток', () => {
+  const headings = [
+    '### Ошибки сессии',
+    '### Ошибки сессии (1)',
+    '### Ошибки сессии:',
+    '### Ошибки сессии [2]',
+    '## Ошибки сессии — 2',
+    '## Ошибки сессии - 1',
+    '**Ошибки сессии**',
+    'Ошибки сессии:',
+    'Ошибки сессии',
+    '###### ошибки сессии'
+  ];
+  for (const h of headings) {
+    const b = revisor.extractBlock('Готово.\n\n' + h + '\n- [e_0007] npm test → exit 1');
+    assert.ok(b, 'заголовок не найден: ' + JSON.stringify(h));
+    assert.ok(b.body.includes('e_0007'), 'тело пустое для: ' + JSON.stringify(h));
+  }
+});
+
+test('заголовок с посторонним текстом после названия не считается', () => {
+  for (const h of ['### Ошибки сессии не было ничего', '### Ошибки сессии и что дальше', '### Ошибки']) {
+    assert.equal(revisor.extractBlock(h + '\n- e_0007'), null, 'ложный заголовок: ' + JSON.stringify(h));
+  }
+});
+
+test('раздел «### Ошибки сессии (1)» с корректной строкой → pass, а не вечный блок', () => {
+  const msg = 'Готово.\n\n### Ошибки сессии (1)\n- [e_0001] npm test -> упало';
+  const v = revisor.decide(
+    { last_assistant_message: msg },
+    [row({ id: 'e_0001' })],
+    { mode: 'lite', revisor: { enabled: true, max_retries: 2 } },
+    0
+  );
+  assert.equal(v.decision, 'pass');
+  assert.equal(v.note, 'all_disclosed');
+});
+
+test('раздел «**Ошибки сессии**» без решёток тоже принимается', () => {
+  const msg = 'Готово.\n\n**Ошибки сессии**\n- [e_0001] npm test -> упало';
+  const v = revisor.decide(
+    { last_assistant_message: msg },
+    [row({ id: 'e_0001' })],
+    { mode: 'lite', revisor: { enabled: true, max_retries: 2 } },
+    0
+  );
+  assert.equal(v.decision, 'pass');
+});
+
+test('раздел без решёток обрывается на следующем заголовке', () => {
+  const b = revisor.extractBlock('**Ошибки сессии**\n- e_0007\n\n## Что дальше\n- e_9999');
+  assert.ok(b.body.includes('e_0007'));
+  assert.ok(!b.body.includes('e_9999'));
+});
+
 test('lite: обязательны только значимые открытые', () => {
   const rows = [
     row({ id: 'e_0001', significance: 'major', status: 'open' }),
