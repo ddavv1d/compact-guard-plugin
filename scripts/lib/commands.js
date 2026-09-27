@@ -65,6 +65,53 @@ function hasFlag(args, name) {
   return args.indexOf('--' + name) !== -1;
 }
 
+// CLAUDE.md — символическая ссылка? Тогда писать в него нельзя: цель может быть где
+// угодно, включая путь вне проекта, а `.bak` рядом с симлинком содержал бы содержимое
+// чужого файла (HIGH-4 отчёта security-v1). Отказ с понятным текстом, ничего не пишем.
+function assertNotSymlink(file) {
+  let st = null;
+  try {
+    st = fs.lstatSync(file);
+  } catch (_) {
+    return; // файла нет — писать безопасно
+  }
+  if (st.isSymbolicLink()) {
+    let target = '';
+    try { target = ' → ' + fs.readlinkSync(file); } catch (_) { target = ''; }
+    throw new Error(file + target + ' — символическая ссылка. ' +
+      'Отказываюсь писать сквозь неё: целью может быть файл вне проекта. ' +
+      'Замените ссылку обычным файлом или примените блок к целевому файлу вручную.');
+  }
+}
+
+// Сколько раз встречается подстрока.
+function countOccurrences(text, needle) {
+  if (!needle) return 0;
+  let n = 0;
+  let from = 0;
+  for (;;) {
+    const i = text.indexOf(needle, from);
+    if (i === -1) return n;
+    n++;
+    from = i + needle.length;
+  }
+}
+
+// Маркеры в файле должны быть ровно одной парой в правильном порядке. Вложенные или
+// повторные маркеры раньше приводили к молчаливому удалению текста пользователя
+// (MED-1 отчёта security-v1): findBlock брал первый start и первый end после него.
+function assertMarkersSane(text) {
+  const s = instructor.CLAUDE_MD_START;
+  const e = instructor.CLAUDE_MD_END;
+  const starts = countOccurrences(text, s);
+  const ends = countOccurrences(text, e);
+  if (starts === 0 && ends === 0) return;
+  if (starts === 1 && ends === 1 && text.indexOf(s) < text.indexOf(e)) return;
+  throw new Error('в CLAUDE.md несколько блоков Compact Guard, поправь вручную ' +
+    '(маркеров ' + s + ': ' + starts + ', ' + e + ': ' + ends + '). ' +
+    'Файл не изменён: автоматическая правка могла бы удалить ваш текст между маркерами.');
+}
+
 // Блок CLAUDE.md: текст между маркерами (без самих маркеров) и его границы в файле.
 function findBlock(text) {
   const s = instructor.CLAUDE_MD_START;
@@ -179,8 +226,13 @@ function cmdInit(args) {
   const block = instructor.claudeMdBlock();
   const out = [];
 
+  // Проверки до любого чтения и записи: сквозь симлинк не пишем, файл с несколькими
+  // блоками не правим (HIGH-4 и MED-1 отчёта security-v1).
+  assertNotSymlink(file);
+
   let text = null;
   try { text = fs.readFileSync(file, 'utf8'); } catch (_) { text = null; }
+  if (text != null) assertMarkersSane(text);
   const found = text == null ? null : findBlock(text);
 
   if (!apply) {
