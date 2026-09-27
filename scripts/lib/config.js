@@ -26,7 +26,9 @@ const DEFAULTS = {
   // Эвристики упавших тестов в stdout успешной команды (план §2).
   test_failure_patterns: ['FAILED', 'FAIL ', 'failing', 'AssertionError', '\\d+ failed', '✗', 'Tests:\\s+\\d+ failed'],
   retention: { days: 30, max_bytes: 50 * 1024 * 1024 },
-  inspector2: { enabled: false, timeout_ms: 30000, model: 'haiku' },
+  // enabled: null = «не задано» — в strict Инспектор-2 включается, в lite выключен.
+  // Явный false в config.json выключает его и в strict.
+  inspector2: { enabled: null, timeout_ms: 30000, model: 'haiku' },
   notify: { telegram: { enabled: false, bot_token_env: 'CG_TG_TOKEN', chat_id_env: 'CG_TG_CHAT' } }
 };
 
@@ -61,7 +63,9 @@ function load(cwd) {
   if (cfg.mode !== 'strict') cfg.mode = 'lite';
   if (!cfg.revisor || typeof cfg.revisor !== 'object') cfg.revisor = defaults().revisor;
   if (typeof cfg.revisor.max_retries !== 'number' || cfg.revisor.max_retries < 0) cfg.revisor.max_retries = 2;
-  if (cfg.mode === 'strict') cfg.inspector2.enabled = cfg.inspector2.enabled !== false;
+  if (!cfg.inspector2 || typeof cfg.inspector2 !== 'object') cfg.inspector2 = defaults().inspector2;
+  // Инспектор-2 работает только в strict; явный false в config.json выключает его и там.
+  cfg.inspector2.enabled = cfg.mode === 'strict' && cfg.inspector2.enabled !== false;
   return cfg;
 }
 

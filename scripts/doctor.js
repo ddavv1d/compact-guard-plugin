@@ -152,6 +152,31 @@ function main() {
     return { ok: true, detail: cfg.mode };
   }, 'проверь config.json в каталоге данных');
 
+  // Инспектор-2 работает только в strict и только через дочерний `claude -p`.
+  check('Инспектор-2 (режим ' + cfgMode + ')', () => {
+    if (cfgMode !== 'strict') {
+      return { ok: true, detail: 'режим lite, Инспектор-2 выключен' };
+    }
+    const v = execFileSync('claude', ['--version'], { encoding: 'utf8', timeout: 15000 }).trim();
+    return { ok: true, detail: '`claude -p` доступен (' + v + '), модель по умолчанию haiku' };
+  }, 'strict требует `claude` в PATH: либо поставь Claude Code в PATH, либо верни режим lite ' +
+     '(/compact-guard:mode lite)');
+
+  check('подкоманда cmd:report отрабатывает', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-doctor-report-'));
+    const res = spawnSync(process.execPath, [HOOK, 'cmd:report'], {
+      encoding: 'utf8',
+      env: Object.assign({}, process.env, { CLAUDE_PLUGIN_DATA: dir, CLAUDE_PROJECT_DIR: dir }),
+      timeout: 20000
+    });
+    if (res.status !== 0) {
+      return { ok: false, detail: 'exit ' + res.status + ' ' + String(res.stderr || '').slice(0, 200) };
+    }
+    const text = String(res.stdout || '').trim();
+    if (!text) return { ok: false, detail: 'пустой вывод' };
+    return { ok: true, detail: text.split('\n')[0].slice(0, 80) };
+  }, 'запусти `node scripts/cg-hook.js cmd:report` и посмотри ошибку');
+
   const width = Math.max.apply(null, rows.map((r) => r.name.length));
   console.log('Compact Guard · doctor');
   console.log('');

@@ -159,12 +159,35 @@ function onPostCompact(cwd, input, cfg) {
     }
   }
 
-  if (cfg.mode === 'strict') {
+  if (cfg.mode === 'strict' && cfg.inspector2 && cfg.inspector2.enabled !== false) {
     try {
       const i2 = require('./lib/inspector2');
-      const verdict = i2.review({ summary: raw, cfg });
-      if (verdict && Array.isArray(verdict.findings) && verdict.findings.length) {
-        for (const f of verdict.findings) {
+      // Резюме отдаём очищенным от <analysis>…</analysis> — модель проверяет то же,
+      // что увидит агент, а не служебные размышления генератора резюме.
+      const openRows = ledger.forSession(cwd, input.session_id)
+        .filter((r) => r.kind !== 'compaction' && r.status === 'open')
+        .map((r) => ledger.describe(r));
+      const verdict = i2.review({
+        summary: transcript.stripAnalysis(raw) || raw,
+        openRows,
+        cfg
+      });
+      const findings = (verdict && Array.isArray(verdict.findings)) ? verdict.findings : [];
+
+      // Каждый вызов виден в events.jsonl: вердикт, длительность, модель, причина отказа.
+      events.record(cwd, {
+        event: 'PostCompact',
+        session_id: input.session_id,
+        result: 'inspector2_' + ((verdict && verdict.verdict) || 'none'),
+        verdict: (verdict && verdict.verdict) || null,
+        findings: findings.length,
+        model: (verdict && verdict.model) || null,
+        reason: (verdict && verdict.reason) || null,
+        inspector2_ms: (verdict && verdict.ms) || null
+      });
+
+      if (findings.length) {
+        for (const f of findings) {
           inspector.appendFinding(cwd, {
             session_id: input.session_id,
             source: 'inspector2',
@@ -176,14 +199,20 @@ function onPostCompact(cwd, input, cfg) {
           session_id: input.session_id,
           source: 'inspector2',
           text: 'Compact Guard, вторая проверка резюме: ' +
-            verdict.findings.map((f) => f.class + ' — «' + String(f.quote || '').slice(0, 200) + '»').join('; ') + '.'
+            findings.map((f) => f.class + ' — «' + String(f.quote || '').slice(0, 200) + '»').join('; ') + '.'
         });
-        note += ':inspector2_findings';
+        note += ':inspector2_findings=' + findings.length;
       } else {
         note += ':inspector2_' + ((verdict && verdict.verdict) || 'none');
       }
     } catch (e) {
-      events.record(cwd, { event: 'PostCompact', session_id: input.session_id, result: 'inspector2_error', detail: String(e && e.message) });
+      // Fail-open: Инспектор-2 никогда не ломает сессию.
+      events.record(cwd, {
+        event: 'PostCompact',
+        session_id: input.session_id,
+        result: 'inspector2_error',
+        reason: String((e && e.message) || e)
+      });
       note += ':inspector2_error';
     }
   }
@@ -346,11 +375,21 @@ const HANDLERS = {
   Stop: onStop
 };
 
+// Подкоманды скиллов: `cg-hook.js cmd:<name> [args]`. stdin не читается, вывод — текст.
+function runCommand(eventArg) {
+  const name = eventArg.slice('cmd:'.length);
+  const res = require('./lib/commands').run(name, process.argv.slice(3));
+  if (res.text) process.stdout.write(res.text.replace(/\n*$/, '\n'));
+  process.exit(res.code);
+}
+
 async function main() {
   const started = Date.now();
   const eventArg = process.argv[2] || '';
   let cwd = process.cwd();
   let input = {};
+
+  if (eventArg.startsWith('cmd:')) { runCommand(eventArg); return; }
 
   try {
     const raw = await readStdin();
