@@ -248,26 +248,148 @@ test('пустое резюме → skipped, без запуска процес�
   assert.deepStrictEqual(r.findings, []);
 });
 
-test('cwd вызова — один и тот же пустой каталог, а не новый на каждый вызов', () => {
-  // Claude Code на каждый новый cwd создаёт каталог в ~/.claude/projects/, поэтому
-  // случайное имя засоряло бы его на каждой компакции (живая проверка 28.09.2026).
+// ——— временный каталог cwd: непредсказуемое имя, удаление после вызова ———
+// Требование ревью безопасности: предсказуемый путь в общем /tmp — вектор инъекции
+// (туда можно подложить CLAUDE.md или .claude/settings.json до нашего запуска).
+
+// Каталоги, которые мог оставить Инспектор-2. Тесты идут параллельно с другими,
+// поэтому сравниваем списки до и после, а не требуем пустоты.
+function listInspectorDirs() {
+  try {
+    return fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('cg-inspector-')).sort();
+  } catch (_) {
+    return [];
+  }
+}
+
+// Фиктивный claude, который записывает свой cwd в файл вне этого cwd.
+function claudeThatReportsCwd(outFile, body) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-cwdprobe-'));
   const file = path.join(dir, 'claude');
-  const outFile = path.join(dir, 'cwds.txt');
   fs.writeFileSync(file, [
     '#!/bin/sh',
     'pwd >> "' + outFile + '"',
+    'ls -A >> "' + outFile + '.ls"',
     'cat >/dev/null',
+    "echo '" + (body || '{"verdict":"clean","findings":[]}') + "'"
+  ].join('\n') + '\n', { mode: 0o755 });
+  return file;
+}
+
+test('cwd — каталог с непредсказуемым именем, каждый вызов свой', () => {
+  const outFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cg-out-')), 'cwds.txt');
+  const bin = claudeThatReportsCwd(outFile);
+
+  review(bin);
+  review(bin);
+  const seen = fs.readFileSync(outFile, 'utf8').split('\n').filter(Boolean);
+  assert.strictEqual(seen.length, 2, 'ожидались два вызова');
+  assert.notStrictEqual(seen[0], seen[1], 'путь предсказуем: одинаковый на двух вызовах');
+  for (const p of seen) {
+    assert.match(path.basename(p), /^cg-inspector-/, 'префикс mkdtemp не тот: ' + p);
+    // Суффикс mkdtemp — шесть случайных символов, а не постоянное имя.
+    assert.ok(path.basename(p).length > 'cg-inspector-'.length, p);
+  }
+});
+
+test('временный каталог удаляется после вызова', () => {
+  const outFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cg-out-')), 'cwds.txt');
+  const bin = claudeThatReportsCwd(outFile);
+
+  const r = review(bin);
+  assert.strictEqual(r.verdict, 'clean');
+  const used = fs.readFileSync(outFile, 'utf8').split('\n').filter(Boolean)[0];
+  assert.ok(used, 'фиктивный claude не сообщил cwd');
+  assert.strictEqual(fs.existsSync(used), false, 'каталог остался после вызова: ' + used);
+});
+
+test('каталог удаляется и когда вызов упал, и при таймауте', () => {
+  // Ненулевой код выхода.
+  const out1 = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cg-out-')), 'c.txt');
+  const dir1 = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-cwdprobe-'));
+  const bad = path.join(dir1, 'claude');
+  fs.writeFileSync(bad, ['#!/bin/sh', 'pwd >> "' + out1 + '"', 'cat >/dev/null', 'exit 9'].join('\n') + '\n', { mode: 0o755 });
+  const r1 = review(bad);
+  assert.strictEqual(r1.verdict, 'error');
+  const used1 = fs.readFileSync(out1, 'utf8').trim().split('\n')[0];
+  assert.strictEqual(fs.existsSync(used1), false, 'каталог остался после ненулевого кода: ' + used1);
+
+  // Таймаут. Дочерний процесс убивают SIGKILL, поэтому полагаться на то, что он успел
+  // записать свой cwd, нельзя (гонка). Считаем каталоги cg-inspector-* до и после.
+  const before = listInspectorDirs();
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-cwdprobe-'));
+  const slow = path.join(dir2, 'claude');
+  fs.writeFileSync(slow, ['#!/bin/sh', 'sleep 5'].join('\n') + '\n', { mode: 0o755 });
+  const r2 = review(slow, { cfg: { inspector2: { model: 'haiku', timeout_ms: 400 } } });
+  assert.strictEqual(r2.verdict, 'error');
+  assert.match(r2.reason, /timeout/);
+  const after = listInspectorDirs();
+  const leaked = after.filter((d) => before.indexOf(d) === -1);
+  assert.deepStrictEqual(leaked, [], 'после таймаута остались каталоги: ' + leaked.join(', '));
+});
+
+test('cwd пуст: модель не видит ни CLAUDE.md, ни .claude проверяемого проекта', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-out-'));
+  const outFile = path.join(base, 'cwds.txt');
+  const bin = claudeThatReportsCwd(outFile);
+  review(bin);
+  const listing = fs.readFileSync(outFile + '.ls', 'utf8').trim();
+  assert.strictEqual(listing, '', 'в cwd что-то лежит: ' + JSON.stringify(listing));
+});
+
+test('makeEmptyCwd отдаёт каждый раз новый пустой каталог с временной пометкой', () => {
+  const a = i2.makeEmptyCwd();
+  const b = i2.makeEmptyCwd();
+  try {
+    assert.notStrictEqual(a.dir, b.dir);
+    assert.strictEqual(a.temporary, true);
+    assert.deepStrictEqual(fs.readdirSync(a.dir), []);
+    assert.ok(a.dir.startsWith(os.tmpdir()), a.dir);
+  } finally {
+    fs.rmSync(a.dir, { recursive: true, force: true });
+    fs.rmSync(b.dir, { recursive: true, force: true });
+  }
+});
+
+test('резюме не попадает ни в аргументы командной строки, ни на диск', () => {
+  // Аргументы видны в списке процессов, файл — соседям по /tmp. Только stdin.
+  const secret = 'СЕКРЕТНАЯ-СТРОКА-РЕЗЮМЕ-7731';
+  const args = i2.claudeArgs('haiku');
+  for (const a of args) assert.ok(!String(a).includes(secret));
+  assert.ok(!args.some((a) => a.length > 40), 'в аргументах длинная строка: ' + JSON.stringify(args));
+
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-out-'));
+  const argsFile = path.join(base, 'args.txt');
+  const stdinFile = path.join(base, 'stdin.txt');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-cwdprobe-'));
+  const bin = path.join(dir, 'claude');
+  // Аргументы — в один файл, stdin целиком (он многострочный) — в другой.
+  fs.writeFileSync(bin, [
+    '#!/bin/sh',
+    'echo "$*" > "' + argsFile + '"',
+    'cat > "' + stdinFile + '"',
     'echo \'{"verdict":"clean","findings":[]}\''
   ].join('\n') + '\n', { mode: 0o755 });
 
-  review(file);
-  review(file);
-  const seen = fs.readFileSync(outFile, 'utf8').split('\n').filter(Boolean);
-  assert.strictEqual(seen.length, 2, 'ожидались два вызова');
-  assert.strictEqual(seen[0], seen[1], 'cwd разный на разных вызовах: ' + JSON.stringify(seen));
-  // Каталог пустой: никакого CLAUDE.md проверяемого проекта модель не увидит.
-  assert.deepStrictEqual(fs.readdirSync(seen[0]), []);
+  const r = review(bin, { summary: 'Резюме сессии. ' + secret });
+  assert.strictEqual(r.verdict, 'clean');
+  const gotArgs = fs.readFileSync(argsFile, 'utf8');
+  const gotStdin = fs.readFileSync(stdinFile, 'utf8');
+  assert.ok(!gotArgs.includes(secret), 'резюме утекло в аргументы: ' + gotArgs);
+  assert.ok(gotStdin.includes(secret), 'резюме не пришло на stdin');
+  assert.ok(gotStdin.includes('<untrusted_summary>'), 'промпт пришёл не целиком');
+});
+
+test('inspector2 не пишет и не читает файлы: только stdin и stdout дочернего процесса', () => {
+  // Страховка от возврата к «промпт через временный файл»: в модуле не должно быть
+  // ни одного обращения к файловому вводу-выводу, кроме mkdtemp/rm для cwd.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'lib', 'inspector2.js'), 'utf8');
+  for (const bad of ['readFileSync', 'writeFileSync', 'appendFileSync', 'readdirSync',
+    'createReadStream', 'createWriteStream', 'openSync']) {
+    assert.ok(!src.includes(bad), 'в inspector2.js появился ' + bad);
+  }
+  assert.ok(src.includes('mkdtempSync'), 'cwd должен создаваться через mkdtempSync');
+  assert.ok(src.includes('rmSync'), 'временный каталог должен удаляться');
 });
 
 test('модель и таймаут берутся из config, дефолт haiku', () => {

@@ -8,8 +8,22 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
+// Один проект — один slug, даже если к нему пришли разными путями. Симлинки приводим
+// к настоящему пути: на macOS $TMPDIR это /var/folders/… → /private/var/folders/…, и без
+// нормализации один и тот же проект получал два каталога данных (сессия Claude Code
+// передаёт в хук realpath, а запуск подкоманды из симлинк-пути — нет). Найдено живой
+// проверкой 28.09.2026. Путь может не существовать (или быть недоступен) — тогда берём
+// как есть, это не повод падать.
+function realPath(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch (_) {
+    return p;
+  }
+}
+
 function projectSlug(cwd) {
-  const abs = path.resolve(cwd || process.cwd());
+  const abs = realPath(path.resolve(cwd || process.cwd()));
   const base = path.basename(abs) || 'project';
   const safe = base.replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
   const hash = crypto.createHash('sha256').update(abs).digest('hex').slice(0, 8);

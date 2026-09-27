@@ -151,19 +151,17 @@ function cleanEnv() {
 }
 
 // Пустой каталог под запуск: чтобы модель не подхватила CLAUDE.md проверяемого проекта.
-// Имя постоянное, а не mkdtemp: Claude Code на каждый новый cwd создаёт каталог в
-// ~/.claude/projects/, и случайные имена засоряли бы его на каждой компакции
-// (найдено живой проверкой 28.09.2026). Один и тот же путь — один каталог на все вызовы.
-const CWD_NAME = 'compact-guard-inspector2';
-
+//
+// Только mkdtempSync: имя непредсказуемо, права по умолчанию (0700 у mkdtemp), каталог
+// удаляется сразу после вызова. Постоянное имя вида <tmpdir>/compact-guard-inspector2
+// отвергнуто ревью безопасности: предсказуемый путь в общем /tmp — это возможность
+// подложить туда CLAUDE.md или .claude/settings.json до нашего запуска и тем самым
+// повлиять на проверяющую модель (вектор инъекции). Плата за это — Claude Code создаёт
+// каталог в ~/.claude/projects/ на каждый новый cwd, то есть по одному пустому каталогу
+// на компакцию в strict; решение осознанное, безопасность важнее чистоты конфига.
 function makeEmptyCwd() {
-  try {
-    const dir = path.join(os.tmpdir(), CWD_NAME);
-    fs.mkdirSync(dir, { recursive: true });
-    return { dir, temporary: false };
-  } catch (_) {
-    return { dir: os.tmpdir(), temporary: false };
-  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-inspector-'));
+  return { dir, temporary: true };
 }
 
 // Возвращает {verdict, findings, reason, ms, model}. Никогда не бросает.
@@ -187,10 +185,21 @@ function review(opts) {
 
   const bin = (opts && opts.claudeBin) || process.env.CG_CLAUDE_BIN || 'claude';
   const prompt = buildPrompt(summary, (opts && opts.openRows) || []);
-  const run = makeEmptyCwd();
+
+  // Каталог создаём до try/finally, но сам вызов тоже не должен ломать сессию:
+  // без каталога Инспектор-2 просто не работает (fail-open), запускать `claude` в
+  // непроверенном cwd мы не станем.
+  let run;
+  try {
+    run = makeEmptyCwd();
+  } catch (e) {
+    return out('error', 'tmpdir_failed: ' + String((e && e.message) || e));
+  }
 
   let res;
   try {
+    // Промпт и резюме уходят только через stdin: ни файла на диске, ни аргумента
+    // командной строки (аргументы видны в списке процессов, файл — соседям по /tmp).
     res = spawnSync(bin, claudeArgs(model), {
       input: prompt,
       encoding: 'utf8',
@@ -203,10 +212,8 @@ function review(opts) {
   } catch (e) {
     return out('error', 'spawn_failed: ' + String((e && e.message) || e));
   } finally {
-    // Каталог постоянный и пустой — удалять его между вызовами не нужно.
-    if (run.temporary) {
-      try { fs.rmSync(run.dir, { recursive: true, force: true }); } catch (_) { /* не важно */ }
-    }
+    // Временный каталог живёт ровно один вызов.
+    try { fs.rmSync(run.dir, { recursive: true, force: true }); } catch (_) { /* не важно */ }
   }
 
   if (res.error) {
@@ -236,5 +243,6 @@ module.exports = {
   resultTextOf,
   claudeArgs,
   cleanEnv,
+  makeEmptyCwd,
   VALID_CLASSES
 };
