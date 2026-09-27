@@ -88,20 +88,26 @@ function readOnce(transcriptPath) {
   return found;
 }
 
-// Живая проверка 27.09.2026: записи compact_boundary и isCompactSummary попадают в файл
-// за десятки миллисекунд до SessionStart:compact, но к моменту чтения могут быть ещё
-// не сброшены на диск — хук получал summary_not_found при уже существующих строках.
-// Поэтому короткий ограниченный опрос: до waitMs миллисекунд шагами по 25 мс.
-// Бюджет события — 300 мс, поэтому по умолчанию ждём не больше 200 мс.
+// Короткий ограниченный опрос файла шагами по 50 мс: транскрипт пишется асинхронно.
+//
+// Что показала живая проверка 28.09.2026 (Claude Code 2.1.283, `claude -p --resume` + /compact):
+// на SessionStart:compact резюме из транскрипта прочитать НЕ УДАЁТСЯ вообще. Записи
+// compact_boundary и isCompactSummary имеют timestamp на ~260 мс раньше вызова хука, но
+// на диск попадают уже после него (mtime транскрипта на ~900 мс позже чтения). Ожидание
+// даже 1500 мс не помогло: три прогона подряд дали summary_not_found. Цифра «~40 мс»
+// из SPIKE §«живой тест 4» на этой версии не подтверждается.
+// Поэтому основной путь Инспектора-1 здесь — не транскрипт, а страховка на PostCompact
+// (сырое compact_summary), а вердикт агенту доставляется очередью notices на следующем
+// UserPromptSubmit/PreToolUse. Бюджет держим маленьким: ждать бессмысленно.
 function lastSummary(transcriptPath, waitMs) {
   if (!transcriptPath) return null;
-  const budget = typeof waitMs === 'number' ? waitMs : 200;
+  const budget = typeof waitMs === 'number' ? waitMs : 150;
   const deadline = Date.now() + Math.max(0, budget);
   for (;;) {
     const found = readOnce(transcriptPath);
     if (found) return found;
     if (Date.now() >= deadline) return null;
-    sleepSync(Math.min(25, deadline - Date.now()));
+    sleepSync(Math.min(50, deadline - Date.now()));
   }
 }
 

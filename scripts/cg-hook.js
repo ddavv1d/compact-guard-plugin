@@ -84,7 +84,7 @@ function onSessionStart(cwd, input, cfg) {
     const openRows = sessionRows.filter((r) => r.kind !== 'compaction' && r.status === 'open');
     // Ожидание сброса транскрипта на диск; в тестах и doctor сокращается через env.
     const waitMs = Number(process.env.CG_TRANSCRIPT_WAIT_MS);
-    const found = transcript.lastSummary(input.transcript_path, Number.isFinite(waitMs) ? waitMs : 200);
+    const found = transcript.lastSummary(input.transcript_path, Number.isFinite(waitMs) ? waitMs : 150);
 
     if (found && found.text) {
       const res = inspector.inspect(cwd, {
