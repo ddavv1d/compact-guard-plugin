@@ -400,3 +400,115 @@ test('без CLAUDE_PROJECT_DIR берётся cwd', () => {
   assert.ok((res.stdout || '').includes(path.join(fs.realpathSync(box.proj), 'CLAUDE.md')) ||
     (res.stdout || '').includes(path.join(box.proj, 'CLAUDE.md')), res.stdout);
 });
+
+// ——— дефект 9 verify-v1: .bak при первом применении к существующему файлу ———
+
+test('init --apply к существующему файлу всегда делает .bak', () => {
+  const box = sandbox();
+  fs.writeFileSync(mdPath(box), '# Мой проект\n\nПравила пользователя.\n');
+  const r = cmd(box, 'init', ['--apply']);
+  assert.strictEqual(r.code, 0, r.out + r.err);
+  const bak = mdPath(box) + '.compact-guard.bak';
+  assert.ok(fs.existsSync(bak), 'резервная копия не создана: ' + r.out);
+  assert.strictEqual(fs.readFileSync(bak, 'utf8'), '# Мой проект\n\nПравила пользователя.\n');
+  assert.ok(r.out.includes('Резервная копия'), r.out);
+});
+
+test('init --apply на уже актуальном блоке всё равно оставляет .bak', () => {
+  const box = sandbox();
+  fs.writeFileSync(mdPath(box), '# Мой проект\n');
+  cmd(box, 'init', ['--apply']);
+  const bak = mdPath(box) + '.compact-guard.bak';
+  const first = fs.readFileSync(bak, 'utf8');
+  const r = cmd(box, 'init', ['--apply']);
+  assert.ok(r.out.includes('уже актуален'), r.out);
+  assert.ok(fs.existsSync(bak), 'копия исчезла при повторном apply');
+  // Вторая копия снята с файла, уже содержащего блок.
+  assert.notStrictEqual(fs.readFileSync(bak, 'utf8'), first);
+});
+
+// ——— HIGH-4 security-v1: запись сквозь символическую ссылку ———
+
+test('HIGH-4: init --apply отказывается писать сквозь симлинк CLAUDE.md', () => {
+  const box = sandbox();
+  const outside = path.join(box.proj, 'OUTSIDE.md');
+  fs.writeFileSync(outside, 'чужой файл\n');
+  fs.symlinkSync(outside, mdPath(box));
+
+  const r = cmd(box, 'init', ['--apply']);
+  assert.strictEqual(r.code, 1, 'ожидался отказ, получено: ' + r.out);
+  assert.match(r.out, /символическая ссылка/i, r.out);
+  // Цель не тронута, блок в неё не дописан.
+  assert.strictEqual(fs.readFileSync(outside, 'utf8'), 'чужой файл\n');
+  assert.ok(!fs.existsSync(mdPath(box) + '.compact-guard.bak'), 'создан .bak с чужим содержимым');
+  // Симлинк остался симлинком.
+  assert.ok(fs.lstatSync(mdPath(box)).isSymbolicLink());
+});
+
+test('HIGH-4: remove-rules тоже отказывается работать через симлинк', () => {
+  const box = sandbox();
+  const outside = path.join(box.proj, 'OUTSIDE.md');
+  fs.writeFileSync(outside, instructor.claudeMdBlock() + '\n');
+  fs.symlinkSync(outside, mdPath(box));
+
+  const r = cmd(box, 'remove-rules', []);
+  assert.strictEqual(r.code, 1, 'ожидался отказ, получено: ' + r.out);
+  assert.match(r.out, /символическая ссылка/i, r.out);
+  assert.ok(fs.readFileSync(outside, 'utf8').includes(instructor.CLAUDE_MD_START),
+    'блок удалён из целевого файла');
+});
+
+// ——— MED-1 security-v1: несколько блоков в CLAUDE.md ———
+
+const DOUBLE_MARKERS = [
+  'user top',
+  instructor.CLAUDE_MD_START,
+  'user text A',
+  instructor.CLAUDE_MD_START,
+  'user text B',
+  instructor.CLAUDE_MD_END,
+  'user text C',
+  instructor.CLAUDE_MD_END,
+  'user bottom',
+  ''
+].join('\n');
+
+test('MED-1: remove-rules отказывается при нескольких блоках, текст не теряется', () => {
+  const box = sandbox();
+  fs.writeFileSync(mdPath(box), DOUBLE_MARKERS);
+  const r = cmd(box, 'remove-rules', []);
+  assert.strictEqual(r.code, 1, 'ожидался отказ, получено: ' + r.out);
+  assert.match(r.out, /несколько блоков Compact Guard/i, r.out);
+  // Файл не изменён вообще.
+  assert.strictEqual(fs.readFileSync(mdPath(box), 'utf8'), DOUBLE_MARKERS);
+  assert.ok(fs.readFileSync(mdPath(box), 'utf8').includes('user text A'));
+  assert.ok(fs.readFileSync(mdPath(box), 'utf8').includes('user text B'));
+});
+
+test('MED-1: init --apply отказывается при нескольких блоках', () => {
+  const box = sandbox();
+  fs.writeFileSync(mdPath(box), DOUBLE_MARKERS);
+  const r = cmd(box, 'init', ['--apply']);
+  assert.strictEqual(r.code, 1, 'ожидался отказ, получено: ' + r.out);
+  assert.match(r.out, /несколько блоков Compact Guard/i, r.out);
+  assert.strictEqual(fs.readFileSync(mdPath(box), 'utf8'), DOUBLE_MARKERS);
+  assert.ok(!fs.existsSync(mdPath(box) + '.compact-guard.bak'));
+});
+
+test('MED-1: осиротевший маркер без пары — тоже отказ', () => {
+  const box = sandbox();
+  const text = 'user top\n' + instructor.CLAUDE_MD_END + '\nuser bottom\n';
+  fs.writeFileSync(mdPath(box), text);
+  const r = cmd(box, 'init', ['--apply']);
+  assert.strictEqual(r.code, 1, r.out);
+  assert.strictEqual(fs.readFileSync(mdPath(box), 'utf8'), text);
+});
+
+test('MED-1: одна нормальная пара маркеров по-прежнему обрабатывается', () => {
+  const box = sandbox();
+  fs.writeFileSync(mdPath(box), '# Проект\n');
+  assert.strictEqual(cmd(box, 'init', ['--apply']).code, 0);
+  const r = cmd(box, 'remove-rules', []);
+  assert.strictEqual(r.code, 0, r.out);
+  assert.ok(!fs.readFileSync(mdPath(box), 'utf8').includes(instructor.CLAUDE_MD_START));
+});

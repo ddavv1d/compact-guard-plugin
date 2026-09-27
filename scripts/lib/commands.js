@@ -265,6 +265,9 @@ function cmdInit(args) {
     return out.join('\n');
   }
 
+  // Файл существовал — резервная копия делается всегда, до любой записи и до проверки
+  // «блок уже актуален» (дефект 9: при первом применении к существующему CLAUDE.md
+  // пользователь должен иметь копию исходного файла независимо от исхода).
   const bak = backup(file);
   if (found) {
     if (found.whole.trim() === block.trim()) {
@@ -293,12 +296,15 @@ function cmdRemoveRules() {
   const file = claudeMdPath(dir);
   const out = [];
 
+  assertNotSymlink(file);
+
   let text = null;
   try { text = fs.readFileSync(file, 'utf8'); } catch (_) { text = null; }
   if (text == null) {
     out.push('Файла ' + file + ' нет — удалять нечего.');
     return out.join('\n');
   }
+  assertMarkersSane(text);
 
   const found = findBlock(text);
   if (!found) {
