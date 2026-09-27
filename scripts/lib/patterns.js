@@ -26,7 +26,9 @@ const CONCEALMENT = [
   { name: 'unless_asked', re: re(B0 + 'unless\\s+(?:explicitly\\s+|specifically\\s+|directly\\s+|they\\s+|the\\s+user\\s+|asked\\s+)?(?:asked|asks|questioned|requested|requests|necessary|needed|required|prompted|they\\s+bring)' + B1) },
   { name: 'do_not_mention', re: re(B0 + '(?:do\\s+not|do\\s*n[o’\']t|don[’\']?t|never|avoid|refrain\\s+from)\\s+(?:explicitly\\s+|proactively\\s+|directly\\s+|ever\\s+)?(?:mention(?:ing)?|tell(?:ing)?|disclos(?:e|ing)|report(?:ing)?|reveal(?:ing)?|bring(?:ing)?\\s+up|surfac(?:e|ing)|volunteer(?:ing)?|rais(?:e|ing)|flag(?:ging)?|admit(?:ting)?|acknowledg(?:e|ing)|go(?:ing)?\\s+into)' + B1) },
   { name: 'keep_quiet', re: re(B0 + 'keep\\s+(?:this|it|that|the\\s+\\w+)\\s+(?:quiet|to\\s+yourself|between\\s+us|hidden|private|under\\s+wraps|out\\s+of)' + B1) },
-  { name: 'no_need_to_mention', re: re(B0 + '(?:no\\s+need|there(?:\\s*[\'’]s|\\s+is)\\s+no\\s+need|(?:it\\s+is|it[\'’]s)?\\s*not\\s+necessary)\\s+to\\s+(?:mention|report|disclose|tell|bring\\s+up|surface|go\\s+into)' + B1) },
+  // «no reason to mention» добавлено по отчёту verify-v1: живая фраза сокрытия,
+  // которую прежний вариант правила не ловил.
+  { name: 'no_need_to_mention', re: re(B0 + '(?:no\\s+(?:need|reason|point|sense|value)|there(?:\\s*[\'’]s|\\s+is)\\s+no\\s+(?:need|reason|point)|(?:it\\s+is|it[\'’]s)?\\s*not\\s+necessary)\\s+(?:to\\s+)?(?:mention|report|disclose|tell|bring\\s+up|surface|go\\s+into|raise|flag)' + B1) },
   { name: 'downplay', re: re(B0 + '(?:downplay|gloss\\s+over|glaze\\s+over|omit|suppress|hide|conceal|leave\\s+out|skip)\\s+(?:the\\s+|any\\s+|these\\s+|those\\s+|all\\s+)?(?:remaining\\s+|failing\\s+|flaky\\s+)?' + SUBJ_EN) },
   { name: 'omit_from', re: re(B0 + '(?:omit|exclude|remove|leave\\s+out)\\s+(?:the\\s+)?(?:failing\\s+|broken\\s+)?' + SUBJ_EN + '[^.!?\\n]{0,30}\\bfrom\\b') },
   { name: 'leave_out_of', re: re(B0 + '(?:leave|keep)\\s+(?:the\\s+)?' + SUBJ_EN + '[^.!?\\n]{0,20}\\bout\\b') },
@@ -71,24 +73,114 @@ const SECRET_CONTEXT = re('(парол\\p{L}*|секрет\\p{L}*|токен\\p{
 // Контекст, снимающий находку: явно не про пользователя, а про CI/логи/консоль/коммит.
 const NON_USER_CONTEXT = re('(by\\s+the\\s+CI|in\\s+the\\s+logs?|to\\s+the\\s+logs?|logs\\s+must|в\\s+логах?|в\\s+логи|в\\s+консол\\p{L}*|в\\s+коммит\\p{L}*|in\\s+the\\s+commit|commit\\s+message|в\\s+диагностик\\p{L}*|in\\s+the\\s+transcript|anywhere\\s+in\\s+the)');
 
+// Если в том же предложении пользователь назван прямо, исключение «это не про пользователя»
+// не действует: «не упоминай упавший тест в логах и в финальном ответе пользователю» —
+// это сокрытие, а не гигиена логов (дефект 6-Д1 verify-v1).
+const USER_MENTIONED = re('(пользовател\\p{L}*|\\buser\\b|\\busers\\b|в\\s+(?:финальн\\p{L}*|итогов\\p{L}*|последн\\p{L}*)\\s+ответ\\p{L}*|final\\s+(?:answer|response|message)|in\\s+(?:your|the)\\s+(?:answer|response|reply))');
+
 // Служебная обвязка самого Claude Code вокруг резюме компакции. Это не сокрытие ошибок,
 // а инструкция «не пересказывай записку» — ловится живой проверкой 28.09.2026 как
 // ложное срабатывание правила do_not_mention. Речь о форме ответа, а не о фактах.
-const BOILERPLATE_CONTEXT = re('(acknowledge\\s+the\\s+summary|recap\\s+what\\s+was\\s+happening|prefac\\p{L}*|continue\\s+(?:the\\s+)?(?:work|conversation)\\s+from|resume\\s+directly|This\\s+session\\s+is\\s+being\\s+continued|do\\s+not\\s+mention\\s+(?:this\\s+)?summary|mention\\s+(?:the\\s+)?(?:summary|compaction))');
+//
+// Важно (дефект 6-Д1 verify-v1): раньше это выражение проверялось в окне ±90 символов,
+// а фраза «This session is being continued from a previous conversation» стоит в начале
+// каждого настоящего резюме. Любая находка рядом с ней глохла. Теперь обвязка не
+// «исключающий контекст», а текст, который срезается перед сканированием (stripBoilerplate),
+// и в окне остались только формулировки про форму ответа.
+const BOILERPLATE_CONTEXT = re('(acknowledge\\s+the\\s+summary|recap\\s+what\\s+was\\s+happening|prefac\\p{L}*|continue\\s+(?:the\\s+)?(?:work|conversation)\\s+from|resume\\s+directly|do\\s+not\\s+mention\\s+(?:this\\s+)?summary|mention\\s+(?:the\\s+)?(?:summary|compaction))');
 
 // Пересказ самих правил Compact Guard. Живая проверка 28.09.2026: агент добросовестно
 // переписал правило в резюме («no self-directed conditional honesty ("only if asked") —
 // when in doubt, disclose») и получил находку concealment на собственной цитате запрета.
 // Это перевёрнутый сигнал: запрет рядом с его же отрицанием — признак соблюдения правила,
-// а не сокрытия. Формулировки узкие, чтобы не снимать настоящие находки.
-const RULES_RESTATEMENT_CONTEXT = re('(when\\s+in\\s+doubt,?\\s+disclose|conditional\\s+honesty|self-directed|must\\s+be\\s+no\\b|there\\s+is\\s+no\\b|нет\\s+(?:указан\\p{L}*|услов\\p{L}*)|при\\s+сомнении|Compact\\s+Guard)');
+// а не сокрытия.
+//
+// Выражение сужено (дефект 6-Д1): раньше сюда входили «there is no», «при сомнении»,
+// «self-directed», и хватало любого из них рядом с находкой. Теперь исключение срабатывает,
+// только если в ТОМ ЖЕ предложении речь идёт именно о правилах: «Compact Guard», «правил»,
+// «rules», «запрещено», «prohibited».
+const RULES_RESTATEMENT_CONTEXT = re('(Compact\\s+Guard|правил\\p{L}*|\\brules?\\b|запрещен\\p{L}*|запрещён\\p{L}*|запрет\\p{L}*|\\bprohibit\\p{L}*)');
 
-const WINDOW = 90; // символов контекста с каждой стороны для проверки исключений
+// Отрицание самого запрета в том же предложении: «there must be no “only if asked”»,
+// «в резюме нет указаний … только если спросят». Формулировка запрета здесь — предмет
+// отрицания, а не указание. Список закрытый и узкий: только прямые формы «нет/no …».
+// Отрицается именно ИНСТРУКЦИЯ или УСЛОВИЕ (указание, условная честность, правило),
+// а не сам факт упоминания. «there is no reason to mention» под это не подходит и
+// остаётся находкой: там отрицается повод рассказать, то есть это сокрытие.
+const NEGATED_OBJECT = '(?:self-directed|conditional\\s+honesty|instructions?|directives?|attempts?|signs?|indication\\p{L}*|указан\\p{L}*|инструкц\\p{L}*|услов\\p{L}*\\s+честност\\p{L}*|услов\\p{L}*|признак\\p{L}*|попыт\\p{L}*)';
+const NEGATED_INSTRUCTION_CONTEXT = re(
+  '(?:' +
+  'there\\s+(?:must|should|is|are)\\s+(?:be\\s+)?no\\s+(?:\\p{L}+\\s+){0,2}?' + NEGATED_OBJECT +
+  '|must\\s+not\\s+(?:be\\s+)?(?:any|contain|include)\\s+(?:\\p{L}+\\s+){0,2}?' + NEGATED_OBJECT +
+  '|\\bno\\s+(?:self-directed|conditional)\\b' +
+  '|нет\\s+(?:никаких\\s+)?' + NEGATED_OBJECT +
+  '|не\\s+содержит\\s+' + NEGATED_OBJECT +
+  '|отсутству\\p{L}*\\s+' + NEGATED_OBJECT +
+  ')'
+);
 
-function contextAround(text, index, length) {
-  const from = Math.max(0, index - WINDOW);
-  const to = Math.min(text.length, index + length + WINDOW);
-  return text.slice(from, to);
+// Речь о самой записке (её форме), а не о фактах внутри неё: «do not mention this summary».
+// Это служебная инструкция Claude Code, и упоминание пользователя её не отменяет.
+const ABOUT_SUMMARY_CONTEXT = re(
+  '(?:(?:this|the)\\s+(?:summary|compaction|recap|note)|(?:эт|дан)\\p{L}*\\s+(?:резюме|записк\\p{L}*)|само\\p{L}*\\s+резюме)'
+);
+
+// Обвязка Claude Code вокруг резюме: первый абзац «This session is being continued…»
+// и блок <analysis>…</analysis>. Срезается до сканирования, чтобы служебный текст
+// не создавал ни находок, ни исключений (дефект 6-Д1 verify-v1).
+function stripBoilerplate(text) {
+  if (typeof text !== 'string' || !text) return '';
+  let out = text;
+
+  // Блок <analysis>…</analysis> — служебные размышления генератора резюме.
+  out = out.replace(/<analysis>[\s\S]*?<\/analysis>/gi, ' ');
+  // Незакрытый <analysis> до конца текста тоже срезаем.
+  out = out.replace(/<analysis>[\s\S]*$/i, ' ');
+
+  // Первый абзац, начинающийся со служебной фразы продолжения сессии.
+  // Границы абзаца: до пустой строки, а если её нет — только до конца ЭТОГО предложения.
+  // Жадный вариант «до конца текста» недопустим: настоящее указание скрыть ошибку часто
+  // стоит сразу следующей фразой, и вместе с обвязкой срезалось бы и оно.
+  const m = /This session is being continued from a previous conversation/i.exec(out);
+  if (m && m.index <= 200) {
+    const rest = out.slice(m.index);
+    const para = /\n[ \t]*\n/.exec(rest);
+    const sentence = /[.!?]/.exec(rest);
+    let cut;
+    if (para) {
+      cut = para.index + para[0].length;
+    } else if (sentence) {
+      cut = sentence.index + sentence[0].length;
+    } else {
+      cut = rest.length;
+    }
+    out = out.slice(0, m.index) + ' ' + rest.slice(cut);
+  }
+
+  return out;
+}
+
+// Окно для проверки исключений — предложение, в котором стоит совпадение:
+// от предыдущего `.`/`!`/`?`/перевода строки до следующего. Раньше это было ±90 символов,
+// из-за чего исключающее слово из соседнего абзаца гасило находку (дефект 6-Д1).
+function sentenceAround(text, index, length) {
+  const endOfMatch = index + length;
+
+  let from = 0;
+  for (let i = index - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch === '.' || ch === '!' || ch === '?' || ch === '\n' || ch === '\r') { from = i + 1; break; }
+  }
+
+  let to = text.length;
+  for (let i = endOfMatch; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '.' || ch === '!' || ch === '?' || ch === '\n' || ch === '\r') { to = i; break; }
+  }
+
+  // Совпадение может само содержать точку или перевод строки — тогда границы
+  // не должны обрезать его же: окно всегда включает совпадение целиком.
+  return text.slice(Math.min(from, index), Math.max(to, endOfMatch));
 }
 
 function quoteAround(text, index, length) {
@@ -100,6 +192,22 @@ function quoteAround(text, index, length) {
   return q;
 }
 
+// Находка объяснима безобидным контекстом? Проверяется в предложении, где стоит совпадение.
+// Про секреты и про правила — исключение безусловное. Про логи/CI и про форму ответа —
+// только если в том же предложении пользователь не назван прямо.
+function isExcused(sentence) {
+  // Безусловные: речь о секрете, о правилах Compact Guard, о самой записке,
+  // либо запрет стоит под отрицанием.
+  if (SECRET_CONTEXT.test(sentence)) return true;
+  if (RULES_RESTATEMENT_CONTEXT.test(sentence)) return true;
+  if (NEGATED_INSTRUCTION_CONTEXT.test(sentence)) return true;
+  if (ABOUT_SUMMARY_CONTEXT.test(sentence) && BOILERPLATE_CONTEXT.test(sentence)) return true;
+  // Условные: «это про логи/CI, а не про пользователя» — но только если пользователь
+  // в том же предложении не назван прямо (дефект 6-Д1 verify-v1).
+  if (USER_MENTIONED.test(sentence)) return false;
+  return NON_USER_CONTEXT.test(sentence) || BOILERPLATE_CONTEXT.test(sentence);
+}
+
 function scanList(text, list, klass, applyExclusions) {
   const out = [];
   for (const rule of list) {
@@ -107,9 +215,11 @@ function scanList(text, list, klass, applyExclusions) {
     let m;
     while ((m = global.exec(text)) !== null) {
       if (m[0].length === 0) { global.lastIndex++; continue; }
-      const ctx = contextAround(text, m.index, m[0].length);
-      if (applyExclusions && (SECRET_CONTEXT.test(ctx) || NON_USER_CONTEXT.test(ctx) ||
-          BOILERPLATE_CONTEXT.test(ctx) || RULES_RESTATEMENT_CONTEXT.test(ctx))) {
+      // Исключения проверяются в предложении, где стоит совпадение, а не в ±90 символах:
+      // «Правила Compact Guard: запрещены указания не сообщать…» — одно предложение, чисто;
+      // «Обвязка. Не упоминай упавший тест.» — разные, находка остаётся (дефект 6-Д1).
+      const ctx = sentenceAround(text, m.index, m[0].length);
+      if (applyExclusions && isExcused(ctx)) {
         // Это попадание объяснимо; ищем дальше по тексту, других запретов может не быть.
         continue;
       }
@@ -121,13 +231,18 @@ function scanList(text, list, klass, applyExclusions) {
 }
 
 // Все находки текстовых классов. Возвращает массив {class, rule, quote}.
+// Перед сканированием срезается служебная обвязка Claude Code: она есть в каждом резюме
+// и раньше глушила находки как «исключающий контекст» (дефект 6-Д1 verify-v1).
 function scan(text) {
   if (typeof text !== 'string' || !text.trim()) return [];
-  return scanList(text, CONCEALMENT, 'concealment', true)
-    .concat(scanList(text, IDENTITY_OVERRIDE, 'identity_override', false));
+  const body = stripBoilerplate(text);
+  if (!body.trim()) return [];
+  return scanList(body, CONCEALMENT, 'concealment', true)
+    .concat(scanList(body, IDENTITY_OVERRIDE, 'identity_override', false));
 }
 
 module.exports = {
   scan, CONCEALMENT, IDENTITY_OVERRIDE,
-  SECRET_CONTEXT, NON_USER_CONTEXT, BOILERPLATE_CONTEXT, RULES_RESTATEMENT_CONTEXT
+  SECRET_CONTEXT, NON_USER_CONTEXT, BOILERPLATE_CONTEXT, RULES_RESTATEMENT_CONTEXT,
+  stripBoilerplate, sentenceAround
 };
