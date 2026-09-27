@@ -4,7 +4,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { layout, ensureDir } = require('./paths');
+const { layout, ensureDir, FILE_MODE } = require('./paths');
 const { redact, redactDetail } = require('./redact');
 const { signature } = require('./classify');
 
@@ -25,7 +25,7 @@ function writeState(cwd, state) {
   const p = layout(cwd).state;
   ensureDir(path.dirname(p));
   const tmp = p + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n');
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n', { mode: FILE_MODE });
   fs.renameSync(tmp, p);
 }
 
@@ -113,7 +113,7 @@ function nextId(cwd) {
 function append(cwd, row) {
   const file = layout(cwd).ledger;
   ensureDir(path.dirname(file));
-  fs.appendFileSync(file, JSON.stringify(row) + '\n');
+  fs.appendFileSync(file, JSON.stringify(row) + '\n', { mode: FILE_MODE });
   return row;
 }
 
@@ -282,7 +282,7 @@ function rotate(cwd, cfg, currentSessionId) {
     if (keep.length !== merged.length) {
       removed.ledger = merged.length - keep.length;
       const tmp = paths.ledger + '.tmp';
-      fs.writeFileSync(tmp, keep.map((r) => JSON.stringify(r)).join('\n') + (keep.length ? '\n' : ''));
+      fs.writeFileSync(tmp, keep.map((r) => JSON.stringify(r)).join('\n') + (keep.length ? '\n' : ''), { mode: FILE_MODE });
       fs.renameSync(tmp, paths.ledger);
     }
   }
@@ -299,7 +299,70 @@ function rotate(cwd, cfg, currentSessionId) {
       } catch (_) { /* пропускаем */ }
     }
   }
+
+  // events / findings / notices — по тому же cutoff (MED-4 отчёта security-v1).
+  // Раньше ротация их не касалась вовсе: events.jsonl пишется на каждое срабатывание
+  // каждого хука и рос монотонно, а notices.jsonl читается целиком на каждом
+  // UserPromptSubmit и PreToolUse, то есть стоимость промпта росла от истории проекта.
+  for (const key of ['events', 'findings', 'notices']) {
+    removed[key] = trimJsonlByAge(paths[key], cutoff);
+  }
+
+  // retention.max_bytes: до этой правки поле было объявлено в config.js и не
+  // использовалось нигде. Файл больше лимита усекается до последних строк.
+  const maxBytes = cfg && cfg.retention && cfg.retention.max_bytes;
+  if (typeof maxBytes === 'number' && maxBytes > 0) {
+    removed.truncated = [];
+    for (const key of ['ledger', 'events', 'findings', 'notices']) {
+      if (trimJsonlBySize(paths[key], maxBytes)) removed.truncated.push(key);
+    }
+  }
   return removed;
+}
+
+// Выбросить из jsonl строки со ts старше cutoff. Строку без разбираемого ts оставляем:
+// лучше сохранить лишнее, чем удалить нужное. Возвращает число удалённых строк.
+function trimJsonlByAge(file, cutoff) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (_) { return 0; }
+  const lines = text.split('\n').filter(Boolean);
+  if (!lines.length) return 0;
+  const keep = lines.filter((line) => {
+    let row = null;
+    try { row = JSON.parse(line); } catch (_) { return true; }
+    const t = Date.parse((row && (row.ts || row.last_ts)) || '');
+    if (!Number.isFinite(t)) return true;
+    return t >= cutoff;
+  });
+  if (keep.length === lines.length) return 0;
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, keep.join('\n') + (keep.length ? '\n' : ''), { mode: FILE_MODE });
+  fs.renameSync(tmp, file);
+  return lines.length - keep.length;
+}
+
+// Усечь файл до последних строк, укладывающихся в maxBytes. Голова отбрасывается:
+// свежие записи важнее старых. Возвращает true, если файл был усечён.
+function trimJsonlBySize(file, maxBytes) {
+  let st;
+  try { st = fs.statSync(file); } catch (_) { return false; }
+  if (st.size <= maxBytes) return false;
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (_) { return false; }
+  const lines = text.split('\n').filter(Boolean);
+  // Набираем с конца, пока укладываемся в лимит.
+  const keep = [];
+  let size = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const add = Buffer.byteLength(lines[i], 'utf8') + 1;
+    if (size + add > maxBytes) break;
+    keep.unshift(lines[i]);
+    size += add;
+  }
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, keep.join('\n') + (keep.length ? '\n' : ''), { mode: FILE_MODE });
+  fs.renameSync(tmp, file);
+  return true;
 }
 
 module.exports = {

@@ -4,11 +4,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { layout, ensureDir } = require('./paths');
+const { layout, ensureDir, FILE_MODE } = require('./paths');
 
 function appendLine(file, obj) {
   ensureDir(path.dirname(file));
-  fs.appendFileSync(file, JSON.stringify(obj) + '\n');
+  fs.appendFileSync(file, JSON.stringify(obj) + '\n', { mode: FILE_MODE });
 }
 
 function record(cwd, entry) {

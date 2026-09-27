@@ -30,9 +30,12 @@ function projectSlug(cwd) {
   return safe.slice(0, 40) + '-' + hash;
 }
 
+// CLAUDE_PLUGIN_DATA принимается только абсолютным путём (LOW-2 отчёта security-v1):
+// относительный давал каталог данных относительно process.cwd() хука, то есть данные
+// уезжали не туда, где их потом ищет cmd:report. Непригодное значение — молча дефолт.
 function dataRoot() {
   const fromEnv = process.env.CLAUDE_PLUGIN_DATA;
-  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+  if (fromEnv && fromEnv.trim() && path.isAbsolute(fromEnv.trim())) return fromEnv.trim();
   return path.join(os.homedir(), '.claude', 'compact-guard');
 }
 
@@ -40,8 +43,21 @@ function projectDir(cwd) {
   return path.join(dataRoot(), 'projects', projectSlug(cwd));
 }
 
+// Права каталогов и файлов данных (MED-3 отчёта security-v1). В каталоге лежат вывод
+// упавших команд, полные тексты резюме компакции и карточки — на общем хосте всё это
+// читал любой локальный пользователь (каталоги были 0755, файлы 0644).
+// На Windows режим игнорируется, это нормально.
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
+
 function ensureDir(dir) {
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+  // recursive:true не меняет права уже существующего каталога — досаживаем сами,
+  // чтобы каталоги, созданные прежней версией плагина, тоже закрылись.
+  try {
+    const st = fs.statSync(dir);
+    if ((st.mode & 0o077) !== 0) fs.chmodSync(dir, DIR_MODE);
+  } catch (_) { /* не критично: на Windows и в чужих ФС может не работать */ }
   return dir;
 }
 
@@ -62,4 +78,4 @@ function layout(cwd) {
   };
 }
 
-module.exports = { projectSlug, dataRoot, projectDir, ensureDir, layout };
+module.exports = { projectSlug, dataRoot, projectDir, ensureDir, layout, DIR_MODE, FILE_MODE };

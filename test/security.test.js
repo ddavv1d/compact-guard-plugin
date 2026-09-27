@@ -225,3 +225,179 @@ test('LOW-3: список разрешённых переменных покры
     assert.ok(inspector2.ENV_ALLOWLIST.includes(k), 'нет в списке: ' + k);
   }
 });
+
+// ——— MED-3: права каталога данных и файлов ———
+
+const POSIX = process.platform !== 'win32';
+
+test('MED-3: каталог данных недоступен другим пользователям', { skip: !POSIX }, () => {
+  const { paths } = freshData();
+  ledger.recordError(CWD, {
+    session_id: 's1', tool: 'Bash', kind: 'nonzero_exit', significance: 'major',
+    command: 'npm test', exit_code: 1, detail: 'Exit code 1'
+  });
+  const st = fs.statSync(paths.root);
+  assert.equal(st.mode & 0o777, 0o700, 'права каталога: 0' + (st.mode & 0o777).toString(8));
+});
+
+test('MED-3: файлы журнала недоступны другим пользователям', { skip: !POSIX }, () => {
+  const { paths } = freshData();
+  ledger.recordError(CWD, {
+    session_id: 's1', tool: 'Bash', kind: 'nonzero_exit', significance: 'major',
+    command: 'npm test', exit_code: 1, detail: 'Exit code 1'
+  });
+  require('../scripts/lib/events').record(CWD, { event: 'Stop', result: 'ok' });
+  require('../scripts/lib/notices').push(CWD, { session_id: 's1', text: 'проверка' });
+  inspector.appendFinding(CWD, { session_id: 's1', source: 'inspector1', class: 'concealment', quote: 'x' });
+
+  for (const key of ['ledger', 'events', 'notices', 'findings', 'state']) {
+    const f = paths[key];
+    if (!fs.existsSync(f)) continue;
+    const st = fs.statSync(f);
+    assert.equal(st.mode & 0o077, 0, key + ' доступен другим: 0' + (st.mode & 0o777).toString(8));
+  }
+});
+
+test('MED-3: каталог от прежней версии с правами 0755 закрывается', { skip: !POSIX }, () => {
+  const { dir } = freshData();
+  const open = path.join(dir, 'projects', 'legacy');
+  fs.mkdirSync(open, { recursive: true, mode: 0o755 });
+  fs.chmodSync(open, 0o755);
+  require('../scripts/lib/paths').ensureDir(open);
+  assert.equal(fs.statSync(open).mode & 0o077, 0, 'права не поджаты');
+});
+
+// ——— MED-4: ротация events/findings/notices и max_bytes ———
+
+test('MED-4: ротация чистит events, findings и notices по возрасту', () => {
+  const { paths } = freshData();
+  const old = new Date(Date.now() - 60 * 86400000).toISOString();
+  const fresh = new Date().toISOString();
+  fs.mkdirSync(paths.root, { recursive: true });
+  for (const key of ['events', 'findings', 'notices']) {
+    fs.writeFileSync(paths[key],
+      JSON.stringify({ ts: old, marker: 'старая' }) + '\n' +
+      JSON.stringify({ ts: fresh, marker: 'свежая' }) + '\n');
+  }
+  const removed = ledger.rotate(CWD, { retention: { days: 30 } }, 'current');
+  for (const key of ['events', 'findings', 'notices']) {
+    const text = fs.readFileSync(paths[key], 'utf8');
+    assert.ok(!text.includes('старая'), key + ': старая строка осталась');
+    assert.ok(text.includes('свежая'), key + ': свежая строка потеряна');
+    assert.equal(removed[key], 1, key + ': ожидалось 1 удаление, получено ' + removed[key]);
+  }
+});
+
+test('MED-4: строка без разбираемого ts при ротации сохраняется', () => {
+  const { paths } = freshData();
+  fs.mkdirSync(paths.root, { recursive: true });
+  fs.writeFileSync(paths.events, 'не json совсем\n' + JSON.stringify({ marker: 'без ts' }) + '\n');
+  ledger.rotate(CWD, { retention: { days: 30 } }, 'current');
+  const text = fs.readFileSync(paths.events, 'utf8');
+  assert.ok(text.includes('без ts'), 'строка без ts удалена: ' + text);
+  assert.ok(text.includes('не json совсем'), 'битая строка удалена: ' + text);
+});
+
+test('MED-4: max_bytes усекает файл до последних строк', () => {
+  const { paths } = freshData();
+  fs.mkdirSync(paths.root, { recursive: true });
+  const ts = new Date().toISOString();
+  const lines = [];
+  for (let i = 0; i < 400; i++) lines.push(JSON.stringify({ ts, n: i, pad: 'x'.repeat(100) }));
+  fs.writeFileSync(paths.events, lines.join('\n') + '\n');
+  const before = fs.statSync(paths.events).size;
+
+  const removed = ledger.rotate(CWD, { retention: { days: 30, max_bytes: 4096 } }, 'current');
+  const after = fs.statSync(paths.events).size;
+  assert.ok(after <= 4096, 'файл не усечён: ' + after);
+  assert.ok(after < before, 'размер не уменьшился');
+  assert.ok(removed.truncated && removed.truncated.includes('events'), JSON.stringify(removed));
+  // Сохранён хвост, а не голова: свежие записи важнее.
+  const kept = fs.readFileSync(paths.events, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(kept[kept.length - 1].n, 399, 'последняя запись потеряна');
+  assert.ok(kept[0].n > 0, 'усечение не с головы: ' + kept[0].n);
+});
+
+test('MED-4: max_bytes не трогает файл в пределах лимита', () => {
+  const { paths } = freshData();
+  fs.mkdirSync(paths.root, { recursive: true });
+  const text = JSON.stringify({ ts: new Date().toISOString(), n: 1 }) + '\n';
+  fs.writeFileSync(paths.events, text);
+  ledger.rotate(CWD, { retention: { days: 30, max_bytes: 1024 * 1024 } }, 'current');
+  assert.equal(fs.readFileSync(paths.events, 'utf8'), text);
+});
+
+// ——— LOW-1: двойная доставка уведомления ———
+
+test('LOW-1: два параллельных drain доставляют уведомление один раз', () => {
+  const { spawnSync } = require('node:child_process');
+  const { dir } = freshData();
+  const notices = require('../scripts/lib/notices');
+  notices.push(CWD, { session_id: 'dup-session', source: 'test', text: 'единственное уведомление' });
+
+  const runner = path.join(dir, 'drain.js');
+  fs.writeFileSync(runner, [
+    'const n = require(' + JSON.stringify(path.resolve(__dirname, '..', 'scripts', 'lib', 'notices')) + ');',
+    'const r = n.drain(' + JSON.stringify(CWD) + ', "dup-session");',
+    'process.stdout.write(r.text ? "GOT" : "EMPTY");'
+  ].join('\n'));
+
+  const script = [0, 1].map(() => "node '" + runner + "' &").join('\n') + '\nwait\n';
+  const res = spawnSync('/bin/sh', ['-c', script], {
+    encoding: 'utf8',
+    env: Object.assign({}, process.env, { CLAUDE_PLUGIN_DATA: dir }),
+    timeout: 30000
+  });
+  assert.equal(res.status, 0, res.stderr);
+  const gots = (res.stdout.match(/GOT/g) || []).length;
+  assert.equal(gots, 1, 'уведомление доставлено ' + gots + ' раз(а), ожидался 1: ' + res.stdout);
+});
+
+test('LOW-1: захват возвращает файл очереди на место', () => {
+  const { paths } = freshData();
+  const notices = require('../scripts/lib/notices');
+  notices.push(CWD, { session_id: 's1', text: 'первое' });
+  notices.drain(CWD, 's1');
+  assert.ok(fs.existsSync(paths.notices), 'файл очереди не вернулся');
+  assert.equal(fs.readdirSync(paths.root).filter((f) => f.includes('.claim-')).length, 0,
+    'остался файл захвата');
+  // Новое уведомление после доставки по-прежнему доезжает.
+  notices.push(CWD, { session_id: 's1', text: 'второе' });
+  assert.equal(notices.drain(CWD, 's1').text, 'второе');
+});
+
+test('LOW-1: drain на пустой очереди безопасен', () => {
+  freshData();
+  const notices = require('../scripts/lib/notices');
+  assert.deepEqual(notices.drain(CWD, 's1'), { text: '', ids: [] });
+});
+
+// ——— LOW-2: CLAUDE_PLUGIN_DATA только абсолютным путём ———
+
+test('LOW-2: относительный CLAUDE_PLUGIN_DATA игнорируется', () => {
+  const paths = require('../scripts/lib/paths');
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    process.env.CLAUDE_PLUGIN_DATA = '../куда-то';
+    const root = paths.dataRoot();
+    assert.ok(path.isAbsolute(root), 'каталог данных не абсолютный: ' + root);
+    assert.ok(!root.includes('куда-то'), 'относительный путь принят: ' + root);
+    assert.ok(root.includes('compact-guard'), 'ожидался дефолт: ' + root);
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = saved;
+  }
+});
+
+test('LOW-2: абсолютный CLAUDE_PLUGIN_DATA по-прежнему работает', () => {
+  const paths = require('../scripts/lib/paths');
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    const abs = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-abs-'));
+    process.env.CLAUDE_PLUGIN_DATA = abs;
+    assert.equal(paths.dataRoot(), abs);
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = saved;
+  }
+});
