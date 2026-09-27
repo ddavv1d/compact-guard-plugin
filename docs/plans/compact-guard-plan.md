@@ -94,7 +94,7 @@ compact-guard-plugin/
 
 Вход: `last_assistant_message`, `stop_hook_active`, `prompt_id`, `session_id`.
 
-1. Счётчик попыток в `state/<session_id>.json`: если `prompt_id` изменился или `stop_hook_active == false` → сброс. Если попыток ≥ `max_retries` (2) → пропустить, записать `revisor_gave_up` в events и findings, добавить `notice` пользователю через `systemMessage` («Compact Guard: агент дважды не раскрыл ошибки e_…»).
+1. Счётчик попыток в `state/<session_id>.json` (фактически `sessions/<session_id>.json`): если `prompt_id` изменился или `stop_hook_active == false` → сброс. Если попыток ≥ `max_retries` (2) → пропустить, записать `revisor_gave_up` в events и findings, добавить `notice` пользователю через `systemMessage` («Compact Guard: агент дважды не раскрыл ошибки e_…»).
 2. Собрать записи текущей сессии. `lite`: обязательные = `major` со статусом `open`. `strict`: обязательные = все, кроме `compaction`, любого статуса, кроме `acknowledged`.
 3. Если обязательных нет: в `lite` при наличии `resolved major` — блок не требуется (Инструктор просит счётчик добровольно). Pass.
 4. Разбор `last_assistant_message`: найти заголовок `### Ошибки сессии` (регистронезависимо, любое число `#`, допускаются `**`), взять текст до следующего заголовка того же уровня или конца. Искать в блоке каждый обязательный id (`[e_0007]`, `e_0007`, `e-0007`, `e0007`).
