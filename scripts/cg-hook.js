@@ -234,8 +234,11 @@ function onPostCompact(cwd, input, cfg) {
         notices.push(cwd, {
           session_id: input.session_id,
           source: 'inspector2',
+          // Цитаты Инспектора-2 тоже недоверенные: их контролирует дочерняя модель,
+          // которая читала резюме атакующего. Тот же безопасный вид, что у Инспектора-1
+          // (CRIT-1 отчёта security-v1).
           text: 'Compact Guard, вторая проверка резюме: ' +
-            findings.map((f) => f.class + ' — «' + String(f.quote || '').slice(0, 200) + '»').join('; ') + '.'
+            findings.map((f) => f.class + ' — ' + inspector.quoteForContext(f.quote)).join('; ') + '.'
         });
         note += ':inspector2_findings=' + findings.length;
       } else {

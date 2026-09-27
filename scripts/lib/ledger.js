@@ -5,7 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const { layout, ensureDir } = require('./paths');
-const { redactDetail } = require('./redact');
+const { redact, redactDetail } = require('./redact');
 const { signature } = require('./classify');
 
 function nowIso() {
@@ -29,12 +29,85 @@ function writeState(cwd, state) {
   fs.renameSync(tmp, p);
 }
 
+// Счётчик id — read-modify-write, а PostToolUse/PostToolUseFailure приходят отдельными
+// процессами Node и вызываются параллельно. Без блокировки записи терялись и склеивались
+// под одним id (HIGH-3 отчёта security-v1: из 8 параллельных 3 потеряны, id продублирован).
+//
+// Блокировка: fs.openSync(lock, 'wx') — атомарное создание файла. Ждём до ~300 мс,
+// освобождаем в finally. Если лок так и не взят, id всё равно выдаётся, но уникальный
+// по построению: запись не должна теряться из-за занятого лока.
+const LOCK_WAIT_MS = 300;
+const LOCK_STALE_MS = 5000;
+
+function lockPath(cwd) {
+  return layout(cwd).state + '.lock';
+}
+
+// Занять лок. Возвращает файловый дескриптор или null, если не удалось за LOCK_WAIT_MS.
+function acquireLock(cwd) {
+  const file = lockPath(cwd);
+  ensureDir(path.dirname(file));
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      return { fd: fs.openSync(file, 'wx', 0o600), file };
+    } catch (e) {
+      if (!e || e.code !== 'EEXIST') return null;
+      // Лок мог остаться от процесса, который убили: старше LOCK_STALE_MS — снимаем.
+      try {
+        const st = fs.statSync(file);
+        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          fs.unlinkSync(file);
+          continue;
+        }
+      } catch (_) { /* исчез сам — попробуем взять снова */ }
+      if (Date.now() >= deadline) return null;
+      // Короткая синхронная пауза: хук живёт десятки миллисекунд, заводить асинхронность
+      // ради этого дороже, чем подождать здесь.
+      sleepMs(5);
+    }
+  }
+}
+
+function releaseLock(lock) {
+  if (!lock) return;
+  try { fs.closeSync(lock.fd); } catch (_) { /* уже закрыт */ }
+  try { fs.unlinkSync(lock.file); } catch (_) { /* уже удалён */ }
+}
+
+// Синхронная пауза без зависимостей: Atomics.wait на разделяемом буфере.
+function sleepMs(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch (_) {
+    const until = Date.now() + ms;
+    while (Date.now() < until) { /* busy wait как запасной путь */ }
+  }
+}
+
+// id, не требующий координации: время в base36 + 2 случайных символа.
+// Выдаётся только когда лок не взят — чтобы запись не потерялась.
+function uncoordinatedId() {
+  const t = Date.now().toString(36);
+  const r = Math.random().toString(36).slice(2, 4).padEnd(2, '0');
+  return 'e_' + t + r;
+}
+
 function nextId(cwd) {
-  const state = readState(cwd);
-  const n = typeof state.next_id === 'number' && state.next_id > 0 ? state.next_id : 1;
-  state.next_id = n + 1;
-  writeState(cwd, state);
-  return 'e_' + String(n).padStart(4, '0');
+  const lock = acquireLock(cwd);
+  if (!lock) return uncoordinatedId();
+  try {
+    const state = readState(cwd);
+    const n = typeof state.next_id === 'number' && state.next_id > 0 ? state.next_id : 1;
+    state.next_id = n + 1;
+    writeState(cwd, state);
+    return 'e_' + String(n).padStart(4, '0');
+  } catch (_) {
+    // Счётчик недоступен (нет прав на каталог) — запись всё равно должна получить id.
+    return uncoordinatedId();
+  } finally {
+    releaseLock(lock);
+  }
 }
 
 function append(cwd, row) {
@@ -105,7 +178,11 @@ function setStatus(cwd, id, status, extra) {
 // Регистрация ошибки. Дедуп: открытая запись сессии с той же сигнатурой → count++.
 function recordError(cwd, opts) {
   const sessionId = opts.session_id || null;
-  const sig = opts.signature != null ? opts.signature : signature(opts.command || '');
+  // Секреты маскируются и в сигнатуре, и в команде, а не только в detail (HIGH-2
+  // отчёта security-v1): `npm run deploy -- --token=…` попадал в ledger на 30 дней,
+  // в reason Ревизора и в additionalContext при каждой компакции открытым текстом.
+  // Маскирование до дедупа: сигнатура нужна одинаковая, иначе записи не схлопнутся.
+  const sig = redact(opts.signature != null ? opts.signature : signature(opts.command || ''));
   const existing = forSession(cwd, sessionId).find(
     (r) => r.kind === opts.kind && r.status === 'open' && r.signature === sig && r.tool === opts.tool
   );
@@ -129,7 +206,7 @@ function recordError(cwd, opts) {
     kind: opts.kind,
     significance: opts.significance === 'major' ? 'major' : 'minor',
     signature: sig,
-    command: opts.command != null ? String(opts.command).slice(0, 2000) : null,
+    command: opts.command != null ? redact(String(opts.command)).slice(0, 2000) : null,
     exit_code: typeof opts.exit_code === 'number' ? opts.exit_code : null,
     detail: redactDetail(opts.detail || ''),
     count: 1,
@@ -174,8 +251,10 @@ function resolveBySignature(cwd, sessionId, sig, tool) {
 }
 
 // Короткое описание записи для текстов пользователю и агенту.
+// redact здесь — вторая страховка: записи могли попасть в журнал версией плагина,
+// которая ещё не маскировала signature/command (HIGH-2 отчёта security-v1).
 function describe(row) {
-  const what = row.signature || row.command || row.kind;
+  const what = redact(String(row.signature || row.command || row.kind));
   let tail;
   if (row.kind === 'nonzero_exit') tail = 'exit ' + (row.exit_code == null ? '?' : row.exit_code);
   else if (row.kind === 'tool_error') tail = 'ошибка инструмента ' + (row.tool || '');

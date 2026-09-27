@@ -47,14 +47,30 @@ const ID_AFTER = '(?=$|[\\s\\])»"`*:,.;])';
 // недопустим: «шаг e 1» и «e 0001» раскрытием не считаются (дефект 4-Д1).
 function idPresent(block, id) {
   if (typeof block !== 'string' || !block) return false;
-  const num = /^e[_-]?(\d+)$/i.exec(String(id || ''));
-  if (!num) return false;
-  const digits = num[1];
-  const bare = digits.replace(/^0+/, '') || '0';
-  // Число целиком: `0*<значимые цифры>` — так `e_1`, `e_01`, `e_0001` равны, а `e_00011` нет.
-  const number = '0*' + bare;
-  const re = new RegExp(ID_BEFORE + '\\[?e[_-]?' + number + '\\]?' + ID_AFTER, 'i');
-  return re.test(block);
+  const raw = String(id || '');
+
+  const num = /^e[_-]?(\d+)$/i.exec(raw);
+  if (num) {
+    const digits = num[1];
+    const bare = digits.replace(/^0+/, '') || '0';
+    // Число целиком: `0*<значимые цифры>` — так `e_1`, `e_01`, `e_0001` равны, а `e_00011` нет.
+    const number = '0*' + bare;
+    const re = new RegExp(ID_BEFORE + '\\[?e[_-]?' + number + '\\]?' + ID_AFTER, 'i');
+    return re.test(block);
+  }
+
+  // Некоординированный id вида `e_mfx3k2ab` — его выдаёт ledger.nextId, когда не удалось
+  // взять лок счётчика. Ведущие нули здесь смысла не имеют, форма сравнивается дословно.
+  // Без этой ветки такую ошибку нельзя было бы раскрыть в принципе, и Ревизор блокировал
+  // бы ход до max_retries.
+  const alnum = /^e[_-]?([a-z0-9]+)$/i.exec(raw);
+  if (alnum) {
+    const body = alnum[1];
+    const re = new RegExp(ID_BEFORE + '\\[?e[_-]?' + body + '\\]?' + ID_AFTER, 'i');
+    return re.test(block);
+  }
+
+  return false;
 }
 
 // Обязательные к раскрытию записи (план §4 п.2).

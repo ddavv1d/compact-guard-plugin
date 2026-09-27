@@ -125,3 +125,79 @@ test('ротация на пустом каталоге не падает', () =
   const { ledger } = freshLedger();
   assert.doesNotThrow(() => ledger.rotate(CWD, { retention: { days: 30 } }, 's1'));
 });
+
+// ——— HIGH-3 security-v1: гонка нумерации при параллельных хуках ———
+//
+// До правки: 8 одновременных PostToolUseFailure давали 5 строк и 4 уникальных id —
+// три ошибки терялись, две сидели под одним id. Для плагина, чья задача «ни одна
+// зафиксированная ошибка не теряется», это отказ основной функции.
+
+test('8 параллельных хуков: 8 записей, 8 уникальных id', () => {
+  const { spawnSync } = require('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-race-'));
+  const hook = path.resolve(__dirname, '..', 'scripts', 'cg-hook.js');
+  const N = 8;
+
+  // Восемь процессов запускаются одной командой оболочки, чтобы старты совпали по времени.
+  const jobs = [];
+  for (let i = 0; i < N; i++) {
+    const input = JSON.stringify({
+      session_id: 'race-session',
+      cwd: CWD,
+      hook_event_name: 'PostToolUseFailure',
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test -- --shard=' + i },
+      error: 'Exit code 1\nsuite ' + i + ' failed'
+    });
+    jobs.push('printf %s ' + JSON.stringify(input).replace(/'/g, "'\\''") +
+      " | node '" + hook + "' PostToolUseFailure &");
+  }
+  const script = jobs.join('\n') + '\nwait\n';
+
+  const res = spawnSync('/bin/sh', ['-c', script], {
+    encoding: 'utf8',
+    env: Object.assign({}, process.env, { CLAUDE_PLUGIN_DATA: dir }),
+    timeout: 60000
+  });
+  assert.equal(res.status, 0, 'параллельный запуск не должен падать: ' + (res.stderr || ''));
+
+  process.env.CLAUDE_PLUGIN_DATA = dir;
+  const l = require('../scripts/lib/paths').layout(CWD);
+  const rows = fs.readFileSync(l.ledger, 'utf8').split('\n').filter(Boolean).map((s) => JSON.parse(s));
+  const created = rows.filter((r) => r.kind === 'nonzero_exit');
+
+  assert.equal(created.length, N, 'ни одна запись не должна потеряться, получено: ' +
+    created.length + ' из ' + N + '; id: ' + created.map((r) => r.id).join(','));
+  const ids = new Set(created.map((r) => r.id));
+  assert.equal(ids.size, N, 'id должны быть уникальны, получено уникальных: ' + ids.size +
+    '; id: ' + created.map((r) => r.id).join(','));
+  // И сигнатуры все разные — значит дедуп не схлопнул разные ошибки.
+  assert.equal(new Set(created.map((r) => r.signature)).size, N);
+});
+
+test('лок счётчика снимается: после nextId файла .lock нет', () => {
+  const { ledger, paths } = freshLedger();
+  ledger.nextId(CWD);
+  const lock = paths.layout(CWD).state + '.lock';
+  assert.ok(!fs.existsSync(lock), 'лок остался висеть: ' + lock);
+});
+
+test('занятый лок не теряет запись: id выдаётся уникальный', () => {
+  const { ledger, paths } = freshLedger();
+  const lock = paths.layout(CWD).state + '.lock';
+  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  // Свежий чужой лок: ledger должен подождать и выдать некоординированный id,
+  // а не бросить и не потерять запись.
+  fs.writeFileSync(lock, '');
+  try {
+    const a = ledger.nextId(CWD);
+    const b = ledger.nextId(CWD);
+    assert.notEqual(a, b, 'id при занятом локе обязаны различаться');
+    assert.match(a, /^e_[a-z0-9]+$/i, 'неожиданная форма id: ' + a);
+    // Запись с таким id проходит через Ревизора: иначе её нельзя было бы раскрыть.
+    const revisor = require('../scripts/lib/revisor');
+    assert.ok(revisor.idPresent('- [' + a + '] npm test упало', a), 'Ревизор не распознал id ' + a);
+  } finally {
+    try { fs.unlinkSync(lock); } catch (_) { /* уже нет */ }
+  }
+});
