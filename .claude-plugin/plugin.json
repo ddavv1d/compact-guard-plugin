@@ -1,0 +1,11 @@
+{
+  "name": "compact-guard",
+  "displayName": "Compact Guard",
+  "version": "1.0.0",
+  "description": "Три уровня защиты памяти агента: правила для резюме компакции, проверка каждого резюме и раскрытие всех зафиксированных ошибок перед завершением хода.",
+  "author": {
+    "name": "Danil"
+  },
+  "license": "MIT",
+  "keywords": ["compaction", "hooks", "safety", "audit"]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "compact-guard",
+  "description": "Compact Guard — защита памяти агента Claude Code",
+  "owner": {
+    "name": "Danil"
+  },
+  "plugins": [
+    {
+      "name": "compact-guard",
+      "source": "./",
+      "description": "Правила для резюме компакции, проверка резюме и раскрытие зафиксированных ошибок перед завершением хода"
+    }
+  ]
+}

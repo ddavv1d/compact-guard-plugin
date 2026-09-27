@@ -1,0 +1,15 @@
+{
+  "name": "compact-guard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Compact Guard — плагин Claude Code: правила резюме компакции, проверка резюме, раскрытие зафиксированных ошибок",
+  "type": "commonjs",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\"",
+    "doctor": "node scripts/doctor.js"
+  }
+}
