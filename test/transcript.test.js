@@ -127,3 +127,11 @@ test('contentToText терпит неожиданные формы', () => {
   assert.equal(transcript.contentToText(null), '');
   assert.equal(transcript.contentToText(42), '');
 });
+
+test('stripAnalysis убирает и обёртку <summary>…</summary>', () => {
+  const raw = '<analysis>мысли</analysis>\n\n<summary>\nCG-MARKER\n\n### Ошибки сессии\n- [e_0001] npm test\n</summary>';
+  const clean = transcript.stripAnalysis(raw);
+  assert.ok(!/<\/?summary>/i.test(clean), clean);
+  assert.ok(!/analysis/.test(clean));
+  assert.ok(clean.startsWith('CG-MARKER'), clean);
+});

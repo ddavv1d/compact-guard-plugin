@@ -2,9 +2,17 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии по [SemVer](https://semver.org/lang/ru/).
 
-## 1.0.0 — не выпущено
+## 1.0.0 — 2026-09-28
 
 Первая версия. Готово ядро (этап A плана `docs/plans/compact-guard-plan.md`).
+
+### Исправлено (живая проверка установки из marketplace, 28.09.2026)
+
+- Подкоманды скиллов (`/compact-guard:report`, `init`, `remove-rules`, `mode`) искали данные
+  не там, куда их пишут хуки: переменная `CLAUDE_PLUGIN_DATA` в окружение Bash скилла не
+  экспортируется. Теперь скиллы передают каталог явно (`--data "${CLAUDE_PLUGIN_DATA}"`),
+  а без него каталог ищется в `~/.claude/plugins/data/compact-guard*` по slug проекта.
+- Из очищенного резюме и цитат в карточке убраны служебные теги `<summary>`/`</summary>`.
 
 ### Добавлено
 

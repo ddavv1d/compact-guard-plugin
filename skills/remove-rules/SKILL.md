@@ -2,7 +2,7 @@
 name: remove-rules
 description: Убирает из CLAUDE.md этого проекта блок «Compact instructions», который добавил /compact-guard:init. Остальной текст файла не трогает.
 disable-model-invocation: true
-allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:remove-rules)
+allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:remove-rules:*)
 ---
 
 Пользователь попросил убрать блок Compact Guard из CLAUDE.md этого проекта.
@@ -10,7 +10,7 @@ allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:remove-r
 1. Удали блок:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:remove-rules
+node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:remove-rules --data "${CLAUDE_PLUGIN_DATA}"
 ```
 
 Скрипт вырезает только текст между маркерами `<!-- compact-guard:start -->` и `<!-- compact-guard:end -->` и оставляет рядом резервную копию. Остального в файле он не касается.

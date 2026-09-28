@@ -2,7 +2,7 @@
 name: init
 description: Добавляет в CLAUDE.md этого проекта блок «Compact instructions» — правила, по которым агент пишет записку при сжатии контекста. Спрашивает подтверждение и делает резервную копию. Запускать один раз на проект.
 disable-model-invocation: true
-allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:init --preview), Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:init --apply)
+allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:init:*)
 ---
 
 Пользователь попросил прописать правила Compact Guard в CLAUDE.md этого проекта.
@@ -14,7 +14,7 @@ allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:init --p
 ## Шаг 1. Посмотри, что произойдёт
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:init --preview
+node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:init --preview --data "${CLAUDE_PLUGIN_DATA}"
 ```
 
 Скрипт ничего не меняет на диске. Он печатает: путь к CLAUDE.md, точный текст блока, который будет добавлен, и что уже есть в файле (блок отсутствует, блок уже стоит и совпадает, блок стоит но текст устарел).
@@ -36,7 +36,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:init --preview
 ## Шаг 3. Только после явного «да»
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:init --apply
+node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:init --apply --data "${CLAUDE_PLUGIN_DATA}"
 ```
 
 Затем передай пользователю, что ответил скрипт: какой файл изменён и где лежит копия.

@@ -115,7 +115,12 @@ function lastSummary(transcriptPath, waitMs) {
 // текстового анализа он тоже интересен, но для архива «clean» его убираем.
 function stripAnalysis(text) {
   if (typeof text !== 'string') return '';
-  return text.replace(/<analysis>[\s\S]*?<\/analysis>\s*/gi, '').trim();
+  return text
+    .replace(/<analysis>[\s\S]*?<\/analysis>\s*/gi, '')
+    // Сырое резюме обёрнуто в <summary>…</summary>; в карточку и цитаты теги не нужны
+    // (живая проверка 28.09.2026: в цитате оказался хвост «</summary>»).
+    .replace(/<\/?summary>/gi, '')
+    .trim();
 }
 
 module.exports = { lastSummary, lastSummaryFromRows, parseLines, contentToText, stripAnalysis };

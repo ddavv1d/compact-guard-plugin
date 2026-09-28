@@ -2,7 +2,7 @@
 name: report
 description: Показывает, что Compact Guard записал по этому проекту: карточки последних сжатий контекста, открытые ошибки, путь к каталогу данных и текущий режим. Запускать, когда хочется проверить, что агент писал себе в записке.
 disable-model-invocation: true
-allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:report), Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:report --limit:*)
+allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:report:*)
 ---
 
 Пользователь хочет увидеть, что накопил Compact Guard по этому проекту.
@@ -10,7 +10,7 @@ allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:report),
 1. Собери отчёт:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:report
+node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:report --data "${CLAUDE_PLUGIN_DATA}"
 ```
 
 Если пользователь попросил больше записей, чем показано по умолчанию, добавь `--limit N` (по умолчанию последние 5 карточек).

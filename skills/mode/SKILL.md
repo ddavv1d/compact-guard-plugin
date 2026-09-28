@@ -2,7 +2,7 @@
 name: mode
 description: Показывает или переключает режим Compact Guard для этого проекта: lite (по умолчанию) или strict. Без аргумента печатает текущий режим, с аргументом lite или strict — переключает.
 disable-model-invocation: true
-allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:mode), Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:mode lite), Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:mode strict)
+allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:mode:*)
 ---
 
 Пользователь хочет посмотреть или сменить режим Compact Guard.
@@ -10,7 +10,7 @@ allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:mode), B
 1. Если пользователь не назвал режим, покажи текущий:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:mode
+node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:mode --data "${CLAUDE_PLUGIN_DATA}"
 ```
 
 Выведи результат и объясни разницу двумя фразами: в `lite` Ревизор требует раскрыть только значимые неисправленные ошибки — упавшие тесты, сборку, линтер, миграции, деплой. В `strict` он требует все ошибки любой значимости, а каждую записку после сжатия памяти дополнительно читает вторая модель через `claude -p`.
@@ -18,7 +18,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:mode
 2. Если пользователь назвал режим, переключи его — `lite` или `strict`, третьего значения нет:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:mode strict
+node "${CLAUDE_PLUGIN_ROOT}/scripts/cg-hook.js" cmd:mode strict --data "${CLAUDE_PLUGIN_DATA}"
 ```
 
 Покажи вывод команды как есть: там сказано, что записано и в какой файл. Режим действует сразу, со следующего же события, перезапускать сессию не нужно.

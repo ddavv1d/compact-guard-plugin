@@ -33,14 +33,39 @@ function projectSlug(cwd) {
 // CLAUDE_PLUGIN_DATA принимается только абсолютным путём (LOW-2 отчёта security-v1):
 // относительный давал каталог данных относительно process.cwd() хука, то есть данные
 // уезжали не туда, где их потом ищет cmd:report. Непригодное значение — молча дефолт.
-function dataRoot() {
+function dataRoot(cwd) {
   const fromEnv = process.env.CLAUDE_PLUGIN_DATA;
   if (fromEnv && fromEnv.trim() && path.isAbsolute(fromEnv.trim())) return fromEnv.trim();
-  return path.join(os.homedir(), '.claude', 'compact-guard');
+  return discoverDataRoot(cwd);
+}
+
+// Хуки всегда получают CLAUDE_PLUGIN_DATA от Claude Code, а подкоманды скиллов и doctor —
+// не всегда (живая проверка 28.09.2026: /compact-guard:report искал данные в
+// ~/.claude/compact-guard, пока хуки писали в ~/.claude/plugins/data/compact-guard-compact-guard).
+// Поэтому без переменной ищем каталог данных плагина сами: ~/.claude/plugins/data/compact-guard*.
+// Предпочитаем тот, где уже есть projects/<slug> этого проекта; иначе единственный
+// найденный; иначе старый fallback.
+function discoverDataRoot(cwd) {
+  const legacy = path.join(os.homedir(), '.claude', 'compact-guard');
+  const base = path.join(os.homedir(), '.claude', 'plugins', 'data');
+  let names = [];
+  try {
+    names = fs.readdirSync(base).filter((n) => n.startsWith('compact-guard')).sort();
+  } catch (_) {
+    return legacy;
+  }
+  const candidates = names.map((n) => path.join(base, n));
+  const slug = projectSlug(cwd);
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, 'projects', slug))) return c;
+  }
+  if (fs.existsSync(path.join(legacy, 'projects', slug))) return legacy;
+  if (candidates.length === 1) return candidates[0];
+  return legacy;
 }
 
 function projectDir(cwd) {
-  return path.join(dataRoot(), 'projects', projectSlug(cwd));
+  return path.join(dataRoot(cwd), 'projects', projectSlug(cwd));
 }
 
 // Права каталогов и файлов данных (MED-3 отчёта security-v1). В каталоге лежат вывод

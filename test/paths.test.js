@@ -111,16 +111,58 @@ test('layout кладёт всё внутрь каталога проекта', 
   }
 });
 
-test('CLAUDE_PLUGIN_DATA задаёт корень, иначе ~/.claude/compact-guard', () => {
+test('CLAUDE_PLUGIN_DATA задаёт корень, иначе поиск каталога плагина или ~/.claude/compact-guard', () => {
   const saved = process.env.CLAUDE_PLUGIN_DATA;
   try {
     const custom = tmp('cg-root-');
     process.env.CLAUDE_PLUGIN_DATA = custom;
     assert.ok(paths.dataRoot().startsWith(custom));
     delete process.env.CLAUDE_PLUGIN_DATA;
-    assert.strictEqual(paths.dataRoot(), path.join(os.homedir(), '.claude', 'compact-guard'));
+    // Без переменной — либо старый fallback, либо найденный каталог плагина
+    // в ~/.claude/plugins/data/compact-guard* (на машине с установленным плагином).
+    const root = paths.dataRoot();
+    const legacy = path.join(os.homedir(), '.claude', 'compact-guard');
+    const pluginData = path.join(os.homedir(), '.claude', 'plugins', 'data', 'compact-guard');
+    assert.ok(root === legacy || root.startsWith(pluginData), root);
   } finally {
     if (saved === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
     else process.env.CLAUDE_PLUGIN_DATA = saved;
   }
+});
+
+// Без CLAUDE_PLUGIN_DATA (так запускаются подкоманды скиллов) каталог данных ищется в
+// ~/.claude/plugins/data/compact-guard*: тот, где уже есть projects/<slug> этого проекта.
+// HOME подменяется в дочернем процессе, домашний каталог пользователя не трогается.
+test('dataRoot без переменной находит каталог плагина с данными этого проекта', () => {
+  const { spawnSync } = require('node:child_process');
+  const home = tmp('cg-home-');
+  const proj = tmp('cg-proj-');
+  const slug = paths.projectSlug(proj);
+  const good = path.join(home, '.claude', 'plugins', 'data', 'compact-guard-compact-guard');
+  const other = path.join(home, '.claude', 'plugins', 'data', 'compact-guard-inline');
+  fs.mkdirSync(path.join(good, 'projects', slug), { recursive: true });
+  fs.mkdirSync(path.join(other, 'projects'), { recursive: true });
+  const env = Object.assign({}, process.env, { HOME: home, USERPROFILE: home });
+  delete env.CLAUDE_PLUGIN_DATA;
+  const res = spawnSync(process.execPath, ['-e',
+    'const p=require(process.argv[1]);process.stdout.write(p.projectDir(process.argv[2]))',
+    path.resolve(__dirname, '..', 'scripts', 'lib', 'paths.js'), proj], { env, encoding: 'utf8' });
+  assert.strictEqual(res.status, 0, res.stderr);
+  assert.strictEqual(res.stdout, path.join(good, 'projects', slug));
+});
+
+test('dataRoot без переменной и без данных: единственный каталог плагина, иначе старый fallback', () => {
+  const { spawnSync } = require('node:child_process');
+  const home = tmp('cg-home-');
+  const proj = tmp('cg-proj-');
+  const only = path.join(home, '.claude', 'plugins', 'data', 'compact-guard-compact-guard');
+  fs.mkdirSync(only, { recursive: true });
+  const env = Object.assign({}, process.env, { HOME: home, USERPROFILE: home });
+  delete env.CLAUDE_PLUGIN_DATA;
+  const run = () => spawnSync(process.execPath, ['-e',
+    'const p=require(process.argv[1]);process.stdout.write(p.dataRoot(process.argv[2]))',
+    path.resolve(__dirname, '..', 'scripts', 'lib', 'paths.js'), proj], { env, encoding: 'utf8' }).stdout;
+  assert.strictEqual(run(), only);
+  fs.mkdirSync(path.join(home, '.claude', 'plugins', 'data', 'compact-guard-x'), { recursive: true });
+  assert.strictEqual(run(), path.join(home, '.claude', 'compact-guard'));
 });

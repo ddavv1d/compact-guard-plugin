@@ -383,6 +383,25 @@ const COMMANDS = {
   mode: cmdMode
 };
 
+// Скиллы передают каталог данных плагина явно: `--data "${CLAUDE_PLUGIN_DATA}"` (Claude Code
+// подставляет переменную в тело скилла, но не экспортирует её в окружение Bash).
+// Принимается только абсолютный путь; иначе аргумент игнорируется и работает поиск
+// каталога в paths.dataRoot(). Возвращает аргументы без --data.
+function takeDataArg(args) {
+  const rest = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    let value;
+    if (a === '--data') { value = args[i + 1]; i++; }
+    else if (a.startsWith('--data=')) { value = a.slice('--data='.length); }
+    else { rest.push(a); continue; }
+    if (typeof value === 'string' && value.trim() && path.isAbsolute(value.trim())) {
+      process.env.CLAUDE_PLUGIN_DATA = value.trim();
+    }
+  }
+  return rest;
+}
+
 // Возвращает {code, text}. Никогда не бросает.
 function run(name, args) {
   const fn = COMMANDS[name];
@@ -393,7 +412,7 @@ function run(name, args) {
     };
   }
   try {
-    return { code: 0, text: fn(args || []) };
+    return { code: 0, text: fn(takeDataArg(args || [])) };
   } catch (e) {
     return { code: 1, text: 'Compact Guard: ' + String((e && e.message) || e) };
   }

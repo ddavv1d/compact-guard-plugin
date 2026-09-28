@@ -512,3 +512,22 @@ test('MED-1: одна нормальная пара маркеров по-пре
   assert.strictEqual(r.code, 0, r.out);
   assert.ok(!fs.readFileSync(mdPath(box), 'utf8').includes(instructor.CLAUDE_MD_START));
 });
+
+// Скиллы передают каталог данных явно: --data "${CLAUDE_PLUGIN_DATA}" (переменная в
+// окружение Bash не экспортируется — живая проверка 28.09.2026).
+test('--data задаёт каталог данных без переменной окружения; относительный путь игнорируется', () => {
+  const box = sandbox();
+  const env = Object.assign({}, process.env, { CLAUDE_PROJECT_DIR: box.proj });
+  delete env.CLAUDE_PLUGIN_DATA;
+  const run = (args) => spawnSync(process.execPath, [HOOK, 'cmd:mode'].concat(args), { encoding: 'utf8', env, timeout: 20000 });
+  const r1 = run(['strict', '--data', box.data]);
+  assert.strictEqual(r1.status, 0, r1.stderr);
+  const cfg = path.join(box.data, 'projects', require('../scripts/lib/paths').projectSlug(box.proj), 'config.json');
+  assert.ok(fs.existsSync(cfg), 'config.json должен появиться в каталоге из --data');
+  assert.strictEqual(JSON.parse(fs.readFileSync(cfg, 'utf8')).mode, 'strict');
+  const r2 = run(['--data=' + box.data]);
+  assert.match(r2.stdout, /strict/);
+  const r3 = run(['--data', 'relative/dir']);
+  assert.strictEqual(r3.status, 0);
+  assert.ok(!fs.existsSync(path.join(box.proj, 'relative')), 'относительный --data не должен создавать каталог');
+});
